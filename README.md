@@ -67,3 +67,15 @@ pip install -r requirements.txt
 gh auth login
 ```
 
+## Retrieving issues 
+
+Github CLI was used for retrieving issues. 
+After logging in as shown above, clone the directory of the github to retrieve issues from.
+Go into the directory and use these commands: 
+
+``` bash
+gh issue list --state open --json author,body,comments,createdAt,number,state,title,url --limit 900  >pygithub_issues_open.json
+gh issue list --state closed --json author,body,comments,createdAt,number,state,title,url --limit 900  >pygithub_issues_closed.json
+```
+
+Note that there are primary and secondary limits on Github API requests. The limiting factor here is the secondary limit of 900 per minute.
