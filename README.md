@@ -45,3 +45,25 @@ program-repair-llm/
 ├── .gitignore
 ├── README.md
 └── requirements.txt
+```
+
+## Requirements
+
+- Python 3.8 or higher
+
+- All Python dependencies specified in requirements.txt:
+
+```bash
+pip install -r requirements.txt
+```
+
+- GitHub CLI (gh) for automatic repository downloading and cloning:
+
+- Install from the [GitHub CLI installation guide](https://docs.github.com/en/github-cli/github-cli/quickstart).
+
+- After installation, authenticate using:
+
+```bash
+gh auth login
+```
+
