@@ -79,3 +79,8 @@ gh issue list --state closed --json author,body,comments,createdAt,number,state,
 ```
 
 Note that there are primary and secondary limits on Github API requests. The limiting factor here is the secondary limit of 900 per minute.
+To work around this limit if there are more than 900 issues available, a search option can be added to the command with a date range to ensure no more than 900 are requested at a time.
+For example: 
+``` bash
+ gh issue list --state closed --search "created:<=2019-10-24" --json author,body,comments,createdAt,number,state,title,url --limit 900  >pygithub_issues_2_closed.json
+```
