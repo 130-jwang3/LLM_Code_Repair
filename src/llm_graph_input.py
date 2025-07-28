@@ -1,38 +1,39 @@
-"""
-Pipeline for analyzing code using LLMs with graph, coverage, and log inputs.
-"""
+from config import SAMPLE_GRAPH, SAMPLE_COVERAGE, SAMPLE_BUG_REPORT, README_PATH
+import json, requests
 
-def load_graph(graph_file):
-    """
-    Loads graph structure (AST/CPG) from graph_file.
-    """
-    # TODO: Implement graph loading logic
-    pass
+OLLAMA_API = "http://localhost:11434/api/chat"
 
-def load_coverage(coverage_file):
-    """
-    Loads coverage info from coverage_file.
-    """
-    # TODO: Implement coverage loading logic
-    pass
+def analyze_with_llm(model="mistral"):
+    def load_json(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
 
-def load_bug_report(bug_report_file):
-    """
-    Loads bug report/log info from bug_report_file.
-    """
-    # TODO: Implement bug report loading logic
-    pass
+    def safe_read(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        except:
+            return ""
 
-def analyze_with_llm(graph_data, coverage_data=None, bug_report_data=None):
-    """
-    Calls the LLM to analyze the graph and associated data.
-    """
-    # TODO: Implement LLM call
-    pass
+    graph = load_json(SAMPLE_GRAPH)
+    coverage = load_json(SAMPLE_COVERAGE)
+    bug_report = load_json(SAMPLE_BUG_REPORT)
+    readme = safe_read(README_PATH)
 
-if __name__ == "__main__":
-    # Example usage
-    graph = load_graph("data/graphs/sample_graph.json")
-    coverage = load_coverage("data/coverage/sample_coverage.json")
-    bug_report = load_bug_report("data/bug_reports/sample_bug.json")
-    analyze_with_llm(graph, coverage, bug_report)
+    prompt = (
+        "Context from README:\n" + readme + "\n\n"
+        "Bug Report:\n" + json.dumps(bug_report, indent=2) + "\n\n"
+        "Coverage:\n" + json.dumps(coverage, indent=2) + "\n\n"
+        "AST/Graph:\n" + json.dumps(graph, indent=2)
+    )
+
+    response = requests.post(OLLAMA_API, json={
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False
+    })
+
+    print(response.json()["message"]["content"])

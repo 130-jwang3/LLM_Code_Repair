@@ -1,1 +1,5 @@
 astor
+requests
+orjson
+typing-extensions
+tree_sitter
