@@ -1,20 +1,18 @@
-"""
-Script to analyze test coverage and associate it with code or graph nodes/edges.
-"""
-
-import coverage 
+import coverage
 import pytest
 import os
+import shutil
 
 def analyze_coverage(source_dir, output_dir, repo_path):
-    """
-    Runs coverage analysis for code in source_dir and saves results to output_dir.
-    """
-
     os.makedirs(output_dir, exist_ok=True)
-    os.chdir(repo_path)
 
-    cov = coverage.Coverage(source=source_dir)
+    # Absolute paths
+    abs_output_path = os.path.abspath(output_dir)
+    abs_repo_path = os.path.abspath(repo_path)
+
+    os.chdir(abs_repo_path)
+
+    cov = coverage.Coverage()
     cov.start()
 
     pytest.main(["tests/"])
@@ -22,9 +20,17 @@ def analyze_coverage(source_dir, output_dir, repo_path):
     cov.stop()
     cov.save()
 
-    cov.json_report(directory=output_dir)
+    # Move .coverage file to output_dir for clarity
+    coverage_file = os.path.join(abs_repo_path, ".coverage")
+    if os.path.exists(coverage_file):
+        shutil.copy(coverage_file, os.path.join(abs_output_path, ".coverage"))
 
+    # Re-load the saved .coverage file from output_dir to export JSON
+    cov = coverage.Coverage(data_file=os.path.join(abs_output_path, ".coverage"))
+    cov.load()
+    cov.json_report(outfile=os.path.join(abs_output_path, "coverage.json"))
 
+    print(f"[✓] Coverage report saved at {os.path.join(abs_output_path, 'coverage.json')}")
 
 if __name__ == "__main__":
     analyze_coverage("data/raw/PyGithub/github", "data/coverage/PyGithub", "data/raw/PyGithub")

@@ -3,3 +3,8 @@ requests
 orjson
 typing-extensions
 tree_sitter
+pyyaml
+coverage
+pytest
+responses
+pynacl

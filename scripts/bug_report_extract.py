@@ -1,12 +1,15 @@
 import os
 import subprocess
+import time
 from datetime import datetime
 
-def extract_bug_reports(repo_dir, output_dir, max_per_call=900, start_year=2010, end_year=None):
+def extract_bug_reports(repo_dir, output_dir, max_per_call=900, start_year=2010, end_year=None, delay_per_request=30):
+    # Use absolute path for output_dir
+    output_dir = os.path.abspath(output_dir)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # Move into the GitHub repo directory
+    # Change into the repo directory
     os.chdir(repo_dir)
     repo_name = os.path.basename(os.getcwd())
 
@@ -33,10 +36,24 @@ def extract_bug_reports(repo_dir, output_dir, max_per_call=900, start_year=2010,
                 "--limit", str(max_per_call)
             ]
 
-            with open(output_path, "w", encoding="utf-8") as f:
-                subprocess.run(cmd, stdout=f)
+            try:
+                with open(output_path, "w", encoding="utf-8") as f:
+                    subprocess.run(cmd, stdout=f, check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"❌ Failed to fetch issues for {year} ({state}): {e}")
+            except Exception as ex:
+                print(f"❌ Error writing to {output_path}: {ex}")
+
+            print(f"⏳ Waiting {delay_per_request} seconds to avoid rate limits...\n")
+            time.sleep(delay_per_request)
 
     print(f"\n✅ Bug report extraction complete! Files saved to {output_dir}")
 
 if __name__ == "__main__":
-    extract_bug_reports("data/raw/PyGithub", "data/bug_reports/")
+    extract_bug_reports(
+        repo_dir="data/raw/PyGithub",
+        output_dir="data/bug_reports/",
+        start_year=2010,
+        end_year=2025,
+        delay_per_request=10
+    )
