@@ -67,6 +67,58 @@ pip install -r requirements.txt
 gh auth login
 ```
 
+## 🧠 Running LLMs Locally with Ollama (Windows)
+
+We use [Ollama](https://ollama.com) to run models like **Mistral** and **DeepSeek-Coder** locally.
+
+### ✅ Requirements
+
+- Windows 10/11 (x86_64)
+- At least 16GB RAM
+- A GPU with 8GB+ VRAM (e.g. RTX 3060 Ti recommended)
+- WSL not required
+
+### 🔧 Step 1: Install Ollama
+
+Download the installer from the official website:
+
+👉 [https://ollama.com](https://ollama.com)
+
+Click **Download for Windows**, then run the `.exe` installer.
+
+After installation, the Ollama service starts automatically and listens at:
+
+```
+http://localhost:11434
+```
+
+You can test it by running the following in PowerShell or Command Prompt:
+
+```powershell
+ollama --help
+```
+
+---
+
+### 📥 Step 2: Pull and Run Models
+
+#### Mistral
+
+```powershell
+ollama pull mistral
+ollama run mistral
+```
+
+#### DeepSeek-Coder
+
+```powershell
+ollama pull deepseek-coder
+ollama run deepseek-coder
+```
+
+---
+
+
 ## Retrieving issues 
 
 Github CLI was used for retrieving issues. 
