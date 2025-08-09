@@ -1,6 +1,6 @@
 import os
 import sys
-from graph_builder import CodeGraphBuilder
+from .graph_builder import CodeGraphBuilder
 
 def process_directory(input_dir, output_file):
     builder = CodeGraphBuilder()
@@ -13,8 +13,3 @@ def process_directory(input_dir, output_file):
     builder.second_pass()
     builder.save(output_file)
 
-if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python main.py <input_dir> <output_file>")
-        sys.exit(1)
-    process_directory(sys.argv[1], sys.argv[2])

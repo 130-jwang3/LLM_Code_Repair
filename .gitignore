@@ -1,6 +1,7 @@
 .idea/
 /data/raw/*
-/data/processed/*
+/data/mutated/*
 /data/graphs/*
 /data/coverage/*
-/data/bug_reports/*
+/data/text/*
+/reports/*

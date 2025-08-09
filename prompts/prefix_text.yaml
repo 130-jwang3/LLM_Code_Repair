@@ -2,17 +2,35 @@ task_intro: >
   You are an expert software engineer and bug localization analyst.
 
 goal: >
-  Your task is to inspect source code and identify possible bugs or logic errors,
-  using information from code text, test coverage, and bug reports.
+  Your task is to inspect the repository’s source (provided as a single text bundle JSON)
+  and identify likely bugs or logic errors using code text, test coverage, and bug reports.
 
 structure_description: >
   You will receive:
-    - Plain source code in Python or Java format.
-    - Test coverage data that highlights which lines were or were not executed.
-    - Bug descriptions or issue logs indicating suspected problems.
+    - A Repository Text Bundle JSON (Python files only) with:
+        * summary: metadata about generation time, root, and file_count
+        * file_tree: an ASCII tree of the repo (py files only)
+        * files: a list of objects with:
+            - path: repo-relative file path (e.g., "pkg/module.py")
+            - content: the full file contents as plain text
+    - Test coverage data (coverage.json) indicating executed vs. unexecuted lines/files.
+    - Bug reports (selected GitHub issues) describing observed failures/symptoms.
+    - Optionally, additional documentation/config snippets may follow (md/toml/yml/ini).
 
 instructions: >
-  Review the code carefully. Use coverage to focus on untested areas or those that failed tests.
-  Use bug reports to understand user or system-observed issues.
-  Identify root causes and provide clean, minimal repair suggestions.
-  Include the fixed code snippet when possible.
+  Use the file_tree to shortlist likely relevant files. Then dive into files[*].content
+  for those paths. Correlate with coverage to focus on suspicious, untested, or failing
+  areas. Cross-reference bug reports to understand the symptom and narrow the search.
+
+  When you find a likely root cause:
+    - Quote the exact path(s) (files[*].path) and line ranges involved.
+    - Explain the bug concisely (what/why), referencing coverage or reports when helpful.
+    - Propose a minimal fix. Include a precise code patch or replacement snippet.
+      Prefer targeted edits over broad rewrites.
+
+output_format: >
+  Output:
+    1) Brief diagnosis (1–3 bullets)
+    2) Files and lines impacted (with repo-relative paths)
+    3) Minimal patch (code block)
+    4) Rationale linking back to coverage and bug report evidence
