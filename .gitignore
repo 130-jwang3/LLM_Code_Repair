@@ -1,2 +1,8 @@
 .idea/
 venv/
+/data/raw/*
+/data/mutated/*
+/data/graphs/*
+/data/coverage/*
+/data/text/*
+/reports/*

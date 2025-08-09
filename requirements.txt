@@ -2,7 +2,8 @@ astor
 requests
 orjson
 typing-extensions
-tree_sitter
+tree-sitter
+tree-sitter-python
 pyyaml
 coverage
 pytest

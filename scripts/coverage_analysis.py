@@ -3,7 +3,7 @@ import pytest
 import os
 import shutil
 
-def analyze_coverage(source_dir, output_dir, repo_path):
+def analyze_test_coverage(source_dir, output_dir, repo_path):
     os.makedirs(output_dir, exist_ok=True)
 
     # Absolute paths
@@ -31,6 +31,3 @@ def analyze_coverage(source_dir, output_dir, repo_path):
     cov.json_report(outfile=os.path.join(abs_output_path, "coverage.json"))
 
     print(f"[✓] Coverage report saved at {os.path.join(abs_output_path, 'coverage.json')}")
-
-if __name__ == "__main__":
-    analyze_coverage("data/raw/PyGithub/github", "data/coverage/PyGithub", "data/raw/PyGithub")

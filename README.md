@@ -1,3 +1,4 @@
+
 # Program Repair with LLMs: Text, Graph, and Coverage-Based Analysis
 
 ## Overview
@@ -19,23 +20,30 @@ Our aim is to evaluate if and how these richer, multi-modal graph-based represen
 ```markdown
 program-repair-llm/
 ├── data/
-│   ├── bug_reports/        # Extracted or original bug reports and logs
-│   ├── coverage/           # Code test coverage reports/matrices
-│   ├── graphs/             # Graph representations: ASTs, CPGs, etc.
-│   ├── processed/          # Preprocessed/cleaned datasets for experiments
-│   └── raw/                # Original datasets and sources (e.g. CodRep)
-├── models/                 # Model checkpoints, pretrained or finetuned
-├── notebooks/              # Jupyter notebooks for EDA, prototyping, experiments
-├── results/
-│   ├── logs/               # Experiment logs and outputs
-│   └── reports/            # Generated reports and result summaries
-├── scripts/                # Data processing and analysis scripts
+│   ├── coverage/            # Code test coverage reports/matrices
+│   ├── graphs/              # Graph representations: ASTs, CPGs, etc.
+│   ├── issues/              # Extracted bug reports and logs
+│   ├── mutated/              # Mutated (faulty) code versions for experiments
+│   ├── raw/                  # Original datasets and sources
+│   └── text/                 # Bundled plain-text code JSONs
+├── models/                   # Model checkpoints
+├── notebooks/                # Jupyter notebooks for EDA, prototyping
+├── prompts/                  # Prompt templates for LLM modes
+│   ├── prefix_graph.yaml
+│   └── prefix_text.yaml
+├── reports/                  # Generated analysis reports
+├── results/                  # Experiment results and logs
+├── scripts/                  # Data processing and analysis scripts
 │   ├── __init__.py
-│   ├── bug_report_extract.py
+│   ├── clone_repo.py
 │   ├── code_to_graph.py
+│   ├── code_to_text.py
 │   ├── coverage_analysis.py
-│   └── generate_faulty_code.py
-├── src/                    # Core logic and experiment modules
+│   ├── entity_extractor.py
+│   ├── generate_faulty_mutate.py
+│   ├── graph_builder.py
+│   └── issue_extract.py
+├── src/                      # Core logic and experiment modules
 │   ├── __init__.py
 │   ├── config.py
 │   ├── llm_graph_input.py
@@ -43,29 +51,33 @@ program-repair-llm/
 │   ├── metrics.py
 │   └── utils.py
 ├── .gitignore
+├── main.py                   # Entry point — run with different modes
 ├── README.md
 └── requirements.txt
-```
+````
+
+---
 
 ## Requirements
 
-- Python 3.8 or higher
-
-- All Python dependencies specified in requirements.txt:
+* Python 3.8 or higher
+* All Python dependencies specified in `requirements.txt`:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-- GitHub CLI (gh) for automatic repository downloading and cloning:
+* GitHub CLI (`gh`) for automatic repository downloading and cloning:
 
-- Install from the [GitHub CLI installation guide](https://docs.github.com/en/github-cli/github-cli/quickstart).
+  Install from the [GitHub CLI installation guide](https://docs.github.com/en/github-cli/github-cli/quickstart).
 
-- After installation, authenticate using:
+  After installation, authenticate using:
 
 ```bash
 gh auth login
 ```
+
+---
 
 ## 🧠 Running LLMs Locally with Ollama (Windows)
 
@@ -73,10 +85,10 @@ We use [Ollama](https://ollama.com) to run models like **Mistral** and **DeepSee
 
 ### ✅ Requirements
 
-- Windows 10/11 (x86_64)
-- At least 16GB RAM
-- A GPU with 8GB+ VRAM (e.g. RTX 3060 Ti recommended)
-- WSL not required
+* Windows 10/11 (x86\_64)
+* At least 16GB RAM
+* A GPU with 8GB+ VRAM (e.g. RTX 3060 Ti recommended)
+* WSL not required
 
 ### 🔧 Step 1: Install Ollama
 
@@ -118,21 +130,37 @@ ollama run deepseek-coder
 
 ---
 
+### Running Program Repair Checks
 
-## Retrieving issues 
+Once your environment is set up, simply run the `main.py` script with the appropriate `--mode` argument to trigger an LLM-based analysis:
 
-Github CLI was used for retrieving issues. 
-After logging in as shown above, clone the directory of the github to retrieve issues from.
-Go into the directory and use these commands: 
+```bash
+python main.py --mode text   # Plain code text mode
+python main.py --mode graph  # Graph-based mode
+```
 
-``` bash
+* **`--mode text`** → Bundles Python source files into a single JSON (with file tree + code) and sends them to the LLM along with coverage and bug reports.
+* **`--mode graph`** → Sends the generated graph representation (AST/CPG) along with coverage and bug reports.
+
+The script automatically handles which LLM prompt to use based on the mode.
+Coverage and bug report files are read from the configured paths in `config.py`.
+
+---
+
+## Retrieving Issues
+
+GitHub CLI is used for retrieving issues.
+After logging in as shown above, clone the repository and run:
+
+```bash
 gh issue list --state open --json author,body,comments,createdAt,number,state,title,url --limit 900  >pygithub_issues_open.json
 gh issue list --state closed --json author,body,comments,createdAt,number,state,title,url --limit 900  >pygithub_issues_closed.json
 ```
 
-Note that there are primary and secondary limits on Github API requests. The limiting factor here is the secondary limit of 900 per minute.
-To work around this limit if there are more than 900 issues available, a search option can be added to the command with a date range to ensure no more than 900 are requested at a time.
-For example: 
-``` bash
- gh issue list --state closed --search "created:<=2019-10-24" --json author,body,comments,createdAt,number,state,title,url --limit 900  >pygithub_issues_2_closed.json
+**Note:** GitHub imposes a secondary limit of 900 results per minute.
+If you have more than 900 issues, add a date range to the search query to split them into multiple requests. Example:
+
+```bash
+gh issue list --state closed --search "created:<=2019-10-24" --json author,body,comments,createdAt,number,state,title,url --limit 900 >pygithub_issues_2_closed.json
 ```
+
