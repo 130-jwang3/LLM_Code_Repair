@@ -1,11 +1,13 @@
 import os
 import json
-import requests
 import yaml
 
 from .config import PROMPT_PREFIX_TEXT
+from .llm_common import post_ollama, extract_first_json
+from .schemas import is_detection, is_repair
 
 OLLAMA_API = "http://localhost:11434/api/chat"
+
 
 def load_prompt_sections(path):
     try:
@@ -15,6 +17,7 @@ def load_prompt_sections(path):
         print(f"Failed to load prompt YAML: {e}")
         return {}
 
+
 def load_json_safe(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -23,6 +26,7 @@ def load_json_safe(path):
         print(f"Failed to load JSON from {path}: {e}")
         return {}
 
+
 def read_file_safe(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -30,22 +34,6 @@ def read_file_safe(path):
     except Exception:
         return ""
 
-def gather_project_context(repo_path):
-    """
-    Collects non-code context files.
-    Currently: .md, .toml, .yml, .yaml, .ini
-    Returns a dict {rel_path: content}.
-
-    TODO (striding): When inputs are large, chunk these contents with overlap
-    in main.py before sending to the LLM.
-    """
-    context_files = {}
-    for root, _, files in os.walk(repo_path):
-        for file in files:
-            if file.endswith((".md", ".toml", ".yml", ".yaml", ".ini")):
-                full_path = os.path.join(root, file)
-                context_files[os.path.relpath(full_path, repo_path)] = read_file_safe(full_path)
-    return context_files
 
 def load_coverage(coverage_path):
     if coverage_path and os.path.exists(coverage_path):
@@ -57,68 +45,89 @@ def load_coverage(coverage_path):
             return {}
     return {}
 
+
 def analyze_with_llm(
-    model="mistral",
+    model: str = "mistral",
     *,
-    text_path=None,
-    repo_path=None,
-    coverage_path=None,
-    bug_reports=None
+    # NEW: pass both original and mutated bundles
+    text_path_orig: str | None = None,
+    text_path_mut: str | None = None,
+    # Back-compat (if someone passes just text_path, treat it as original)
+    text_path: str | None = None,
+    coverage_path: str | None = None,
+    bug_reports=None,
 ):
     """
-    Run text-based LLM analysis.
+    Run TEXT-mode analysis with ORIGINAL + MUTATED context.
 
-    Preferred usage: pass text_path (bundle from scripts/code_to_text.py).
-    Optionally also pass repo_path to include docs/configs (.md/.toml/.yml/.ini).
+    Expected LLM output (JSON-only):
+      - detection: {"findings":[{"file": "...", "line_spans": [[s,e],...], "confidence": 0.x}, ...]}
+      - (optional) repair: {"diff": "<unified diff touching the findings>"}
     """
-    if not text_path and not repo_path:
-        raise ValueError("Provide at least text_path (preferred) or repo_path.")
-
     prefix = load_prompt_sections(PROMPT_PREFIX_TEXT)
     coverage_data = load_coverage(coverage_path)
 
-    prompt_parts = [
+    # Load ORIGINAL (prefer text_path_orig; fall back to legacy text_path)
+    orig_bundle = load_json_safe(text_path_orig or text_path) if (text_path_orig or text_path) else {}
+    orig_tree = orig_bundle.get("file_tree", "")
+    orig_files = orig_bundle.get("files", [])
+
+    # Load MUTATED
+    mut_bundle = load_json_safe(text_path_mut) if text_path_mut else {}
+    mut_tree = mut_bundle.get("file_tree", "")
+    mut_files = mut_bundle.get("files", [])
+
+    # Build prompt
+    parts = [
         prefix.get("task_intro", ""),
         prefix.get("goal", ""),
         prefix.get("structure_description", ""),
+        # Make clear the task is DETECT on mutated vs original, then optionally REPAIR:
         prefix.get("instructions", ""),
         prefix.get("output_format", ""),
-        "\nCoverage Information:\n" + json.dumps(coverage_data, indent=2),
-        "\nBug Reports:\n" + json.dumps(bug_reports or [], indent=2),
+        "\nCOVERAGE (context only):\n" + json.dumps(coverage_data, indent=2),
+        "\nBUG REPORTS (context only):\n" + json.dumps(bug_reports or [], indent=2),
+        "\n=== ORIGINAL REPO (TEXT) ===",
+        "FILE TREE:\n" + (orig_tree or "<empty>"),
+        "\nFILES:\n" + "\n".join(
+            f"\n--- {f.get('path')} ---\n{f.get('content','')}" for f in orig_files
+        ),
+        "\n=== MUTATED REPO (TEXT) ===",
+        "FILE TREE:\n" + (mut_tree or "<empty>"),
+        "\nFILES:\n" + "\n".join(
+            f"\n--- {f.get('path')} ---\n{f.get('content','')}" for f in mut_files
+        ),
+        "\nReturn a single JSON object ONLY (no markdown).",
     ]
+    prompt = "\n".join(parts)
 
-    # Prefer the single-file text bundle (Python files)
-    if text_path:
-        bundle = load_json_safe(text_path)
-        file_tree = bundle.get("file_tree", "")
-        files = bundle.get("files", [])
-
-        prompt_parts.append("\nRepository File Tree (Python files):\n" + file_tree)
-
-        # TODO (striding): Split these file contents into overlapping chunks in main.py
-        prompt_parts.append("\nProject Python Files (from bundle):")
-        for entry in files:
-            path = entry.get("path", "")
-            content = entry.get("content", "")
-            prompt_parts.append(f"\n--- {path} ---\n{content}")
-
-    # Optionally add non-code docs/configs from repo (if provided)
-    if repo_path:
-        docs = gather_project_context(repo_path)
-        if docs:
-            prompt_parts.append("\nDocumentation & Config Files:")
-            # TODO (striding): Also chunk these if large
-            for rel_path, content in docs.items():
-                prompt_parts.append(f"\n--- {rel_path} ---\n{content}")
-
-    prompt = "\n\n".join(prompt_parts)
-
-    response = requests.post(OLLAMA_API, json={
+    payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False
-    })
+        "messages": [
+            {"role": "system", "content": prefix.get("system", "Respond with JSON only.")},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "options": {"temperature": 0.2, "top_p": 0.95},
+    }
 
-    content = response.json()["message"]["content"]
-    print(content)
-    return content
+    code, resp, err = post_ollama(OLLAMA_API, payload, timeout_s=120, retries=4)
+    if not resp:
+        raise RuntimeError(f"LLM call failed (text mode): {err or code}")
+
+    content = (resp.get("message") or {}).get("content", "")
+    parsed = extract_first_json(content)
+
+    result = {"raw": content}
+    if parsed:
+        ok_det, why_det = is_detection(parsed)
+        ok_rep, why_rep = is_repair(parsed)
+        if ok_det:
+            result["detection"] = parsed
+        if ok_rep:
+            result["repair"] = parsed
+        if not ok_det and not ok_rep:
+            result["_noncompliant_json"] = {"json": parsed, "reason": {"det": why_det, "rep": why_rep}}
+    else:
+        result["_noncompliant_text"] = content[:5000]
+    return result

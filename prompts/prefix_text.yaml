@@ -5,6 +5,11 @@ goal: >
   Your task is to inspect the repository’s source (provided as a single text bundle JSON)
   and identify likely bugs or logic errors using code text, test coverage, and bug reports.
 
+system: >
+  You are a precise bug localization/repair assistant.
+  Respond with a single valid JSON object matching the requested schema.
+  Do not include markdown fences or extra text.
+
 structure_description: >
   You will receive:
     - A Repository Text Bundle JSON (Python files only) with:
@@ -29,8 +34,7 @@ instructions: >
       Prefer targeted edits over broad rewrites.
 
 output_format: >
-  Output:
-    1) Brief diagnosis (1–3 bullets)
-    2) Files and lines impacted (with repo-relative paths)
-    3) Minimal patch (code block)
-    4) Rationale linking back to coverage and bug report evidence
+  Output one JSON object for either localization or repair, e.g.
+  {"file":"path/to/file.py","line_spans":[[start,end],[start,end]],"confidence":[0.71,0.33]}
+  OR
+  {"diff":"--- a/path.py\n+++ b/path.py\n@@ -10,7 +10,7 @@\n- old\n+ new\n"}
