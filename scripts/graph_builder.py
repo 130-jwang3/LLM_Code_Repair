@@ -1,47 +1,110 @@
-from itertools import count
+# graph_builder.py
 import os
 import json
+import math
+import hashlib
+from itertools import count
+from collections import defaultdict
+from typing import Optional, Dict, Any
+
 from tree_sitter import Language, Parser
 import tree_sitter_python as tspython
+
 from .entity_extractor import (
     is_class, is_function, is_import, is_call, get_name, get_code,
     is_assignment, is_decorator, is_docstring,
-    is_if, is_for, is_while, is_try, is_with
+    is_if, is_for, is_while, is_try, is_with,
+    get_signature, get_docstring_text, extract_called_name
 )
 
+# ---------------------------
+#  Tree-sitter setup
+# ---------------------------
 PY_LANGUAGE = Language(tspython.language())
 parser = Parser(PY_LANGUAGE)
+
+# ---------------------------
+#  Small helpers
+# ---------------------------
+
+def stable_id(qname_or_name: str) -> str:
+    base = (qname_or_name or "").encode("utf-8", errors="ignore")
+    return hashlib.sha1(base).hexdigest()[:16]
+
+def code_sha256(code: Optional[str]) -> Optional[str]:
+    if not code:
+        return None
+    return hashlib.sha256(code.encode("utf-8", errors="ignore")).hexdigest()
+
+def make_summary(code: Optional[str], max_chars: int = 400) -> Optional[str]:
+    if not code:
+        return None
+    lines = [ln for ln in code.strip().splitlines()]
+    if not lines:
+        return None
+    head = lines[:2]
+    tail = lines[-2:] if len(lines) > 2 else []
+    snippet = "\n".join(head + (["..."] if tail and len(lines) > 2 else []) + tail)
+    return snippet[:max_chars]
+
+def sloc(code: Optional[str]) -> int:
+    return 0 if not code else len(code.splitlines())
 
 
 class CodeGraphBuilder:
     def __init__(self):
-        self.graph = {"nodes": [], "edges": []}
+        self.graph: Dict[str, list[dict]] = {"nodes": [], "edges": []}
         self.node_ids = count()
-        self.symbol_table = {}
-        self.file_sources = {}
+        self.symbol_table: Dict[str, int] = {}   # qualified_name -> node_id
+        self.file_sources: Dict[str, bytes] = {}
         self.ast_trees = {}
+
+        # stride helpers
+        self.parents: Dict[int, int] = {}        # child_id -> parent_id (via CONTAINS)
+        self.node_by_id: Dict[int, Dict[str, Any]] = {}  # id -> node
 
     # -----------------
     # Graph helpers
     # -----------------
-    def add_node(self, label, **attrs):
+    def add_node(self, label: str, **attrs) -> int:
         node_id = next(self.node_ids)
-        node_data = {"id": node_id, "label": label}
+        node_data: Dict[str, Any] = {"id": node_id, "label": label}
         node_data.update(attrs)
+
+        # compute sid, code_sha, summary, sloc, module placeholder
+        qname = node_data.get("qualified_name") or node_data.get("name") or str(node_id)
+        node_data["sid"] = stable_id(qname)
+        code = node_data.get("code")
+        node_data["code_sha"] = code_sha256(code)
+        node_data["summary"] = make_summary(code)
+        node_data["sloc"] = sloc(code)
+        node_data.setdefault("module", None)
+        node_data.setdefault("parent_id", None)
+
         self.graph["nodes"].append(node_data)
+        self.node_by_id[node_id] = node_data
         return node_id
 
-    def add_edge(self, src, dst, edge_type):
-        self.graph["edges"].append({
+    def add_edge(self, src: int, dst: int, edge_type: str) -> None:
+        edge = {
             "source": src,
             "target": dst,
-            "type": edge_type
-        })
+            "type": edge_type,
+            # stable references for striding
+            "source_sid": self.node_by_id.get(src, {}).get("sid"),
+            "target_sid": self.node_by_id.get(dst, {}).get("sid"),
+        }
+        self.graph["edges"].append(edge)
+        if edge_type == "CONTAINS":
+            self.parents[dst] = src
+            # set parent breadcrumb
+            if dst in self.node_by_id:
+                self.node_by_id[dst]["parent_id"] = src
 
     # -----------------
     # Pass 1 — register defs & statements
     # -----------------
-    def first_pass(self, file_path):
+    def first_pass(self, file_path: str) -> None:
         with open(file_path, "rb") as f:
             source_code = f.read()
 
@@ -54,13 +117,34 @@ class CodeGraphBuilder:
             "Module",
             name=module_name,
             path=file_path,
-            code=source_code.decode("utf-8", errors="ignore")  # full file source
+            qualified_name=module_name,               # treat module as top-level qname
+            code=source_code.decode("utf-8", errors="ignore")
         )
         self.symbol_table[module_name] = module_id
 
         self._register_defs(tree.root_node, source_code, module_id, module_name)
+        self._propagate_module(module_id)
 
-    def _register_defs(self, node, source_code, parent_id, scope_name):
+    def _propagate_module(self, module_id: int) -> None:
+        """Fill `module` for the subtree of a module and ensure breadcrumbs exist."""
+        mod_name = self.node_by_id[module_id].get("name")
+        stack = [module_id]
+        # Build quick child index of CONTAINS edges for speed
+        children = defaultdict(list)
+        for e in self.graph["edges"]:
+            if e["type"] == "CONTAINS":
+                children[e["source"]].append(e["target"])
+
+        while stack:
+            cur = stack.pop()
+            self.node_by_id[cur]["module"] = mod_name
+            for ch in children.get(cur, []):
+                # make sure parent_id exists
+                if self.node_by_id[ch].get("parent_id") is None:
+                    self.node_by_id[ch]["parent_id"] = cur
+                stack.append(ch)
+
+    def _register_defs(self, node, source_code: bytes, parent_id: int, scope_name: str) -> None:
         # Classes
         if is_class(node):
             name = get_name(node, source_code)
@@ -69,7 +153,9 @@ class CodeGraphBuilder:
                 "Class",
                 name=name,
                 qualified_name=qname,
-                code=get_code(node, source_code)
+                code=get_code(node, source_code),
+                signature=None,
+                docstring=get_docstring_text(node, source_code)
             )
             self.symbol_table[qname] = class_id
             self.add_edge(parent_id, class_id, "CONTAINS")
@@ -81,12 +167,15 @@ class CodeGraphBuilder:
         if is_function(node):
             name = get_name(node, source_code)
             qname = f"{scope_name}.{name}"
-            label = "Method" if self.graph["nodes"][parent_id]["label"] == "Class" else "Function"
+            parent_label = self.node_by_id[parent_id]["label"]
+            label = "Method" if parent_label == "Class" else "Function"
             func_id = self.add_node(
                 label,
                 name=name,
                 qualified_name=qname,
-                code=get_code(node, source_code)
+                code=get_code(node, source_code),
+                signature=get_signature(node, source_code),
+                docstring=get_docstring_text(node, source_code)
             )
             self.symbol_table[qname] = func_id
             self.add_edge(parent_id, func_id, "CONTAINS")
@@ -147,13 +236,13 @@ class CodeGraphBuilder:
     # -----------------
     # Pass 2 — resolve imports & calls
     # -----------------
-    def second_pass(self):
+    def second_pass(self) -> None:
         for file_path, tree in self.ast_trees.items():
             module_name = os.path.splitext(os.path.basename(file_path))[0]
             module_id = self.symbol_table[module_name]
             self._resolve_edges(tree.root_node, self.file_sources[file_path], module_id, module_name)
 
-    def _resolve_edges(self, node, source_code, parent_id, scope_name):
+    def _resolve_edges(self, node, source_code: bytes, parent_id: int, scope_name: str) -> None:
         if is_import(node):
             import_text = get_code(node, source_code).strip()
             import_id = self.add_node("Import", code=import_text)
@@ -161,8 +250,8 @@ class CodeGraphBuilder:
             return
 
         if is_call(node):
-            call_text = get_code(node, source_code).strip()
-            func_name = call_text.split("(")[0]
+            call_name = extract_called_name(node, source_code)  # dotted if possible
+            func_name = call_name or get_code(node, source_code).strip().split("(")[0]
             qname_same_scope = f"{scope_name}.{func_name}"
             qname_module_level = func_name
 
@@ -173,7 +262,9 @@ class CodeGraphBuilder:
                 callee_id = self.symbol_table[qname_module_level]
                 self.add_edge(parent_id, callee_id, "CALLS")
             else:
-                ext_id = self.add_node("ExternalFunction", name=func_name)
+                # Create resolvable external node with a qname and sid
+                ext_qname = func_name
+                ext_id = self.add_node("ExternalFunction", name=func_name, qualified_name=ext_qname)
                 self.add_edge(parent_id, ext_id, "CALLS")
             return
 
@@ -183,7 +274,20 @@ class CodeGraphBuilder:
     # -----------------
     # Save
     # -----------------
-    def save(self, output_path):
+    def save(self, output_path: str) -> None:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(self.graph, f, indent=2)
+
+    def save_stride_index(self, output_path_ndjson: str) -> None:
+        """Optional: emit NDJSON where each line is a node or edge record for streaming."""
+        os.makedirs(os.path.dirname(output_path_ndjson), exist_ok=True)
+        with open(output_path_ndjson, "w", encoding="utf-8") as f:
+            for n in self.graph["nodes"]:
+                rec = {"type": "node"}
+                rec.update(n)
+                f.write(json.dumps(rec) + "\n")
+            for e in self.graph["edges"]:
+                rec = {"type": "edge"}
+                rec.update(e)
+                f.write(json.dumps(rec) + "\n")
