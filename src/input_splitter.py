@@ -13,7 +13,6 @@ def split_text(input, chunk_size):
             encoding_name='cl100k_base',
             chunk_size=chunk_size,
             chunk_overlap=50,
-            separators=["\n\n", "\n", " ", ""]
         )
 
         separated_text.append({'file_tree': src['file_tree']})
@@ -38,10 +37,10 @@ def split_ast(input, chunk_size):
     pass
 
 # example usage of split_text
-def main():
+# def main():
 
-    separated = split_text("LLM_Code_Repair/data/text/repo_text_bundle.json", 4000)
-    print(len(separated))
-    print(separated[2])
+#     separated = split_text("LLM_Code_Repair/data/text/repo_text_bundle.json", 4000)
+#     print(len(separated))
+#     print(separated[99])
 
-main()
+# main()
