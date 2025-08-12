@@ -12,6 +12,7 @@ from scripts.code_to_graph import process_directory as build_graph
 from src.llm_text_input import analyze_with_llm as run_text_llm
 from src.llm_graph_input import analyze_with_llm as run_graph_llm
 from src.metrics import calculate_patch_accuracy, calculate_f1
+from src.input_splitter import split_text
 
 # === CONFIG ===
 REPO_URL = "PyGithub/PyGithub"
@@ -52,6 +53,14 @@ def main(mode, model="mistral"):
         print("❌ Invalid mode. Use 'text' or 'graph'.")
         sys.exit(1)
 
+    #chunk size will depend on llm token limit 
+    if model == 'mistral':
+        chunk_size = 8000
+    elif model == 'deepseek-coder':
+        chunk_size = 16000
+    elif model == 'llama2:7b':
+        chunk_size = 4000
+
     os.makedirs(REPORT_DIR, exist_ok=True)
 
     print("=== [1] PREPROCESS ===")
@@ -86,6 +95,10 @@ def main(mode, model="mistral"):
     #   - Striding should happen here so that both modes share the same logic
 
     if mode == "text":
+        #TODO: use separated_text list 
+        
+        separated_text = split_text(TEXT_BUNDLE_PATH, chunk_size)
+        
         llm_result = run_text_llm(
             model=model,
             text_path=TEXT_BUNDLE_PATH,
