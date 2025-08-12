@@ -6,6 +6,12 @@ goal: >
   along with test coverage and bug reports, to detect likely bugs and propose
   minimal, precise code repairs.
 
+system: >
+  You are a precise bug localization/repair assistant.
+  Respond with a single valid JSON object matching the requested schema.
+  Do not include markdown fences or extra text.
+
+
 structure_description: >
   You will receive:
     - Graph JSON with:
@@ -48,9 +54,7 @@ instructions: >
   plus what additional logs or inputs would help.
 
 output_format: >
-  Provide:
-    1) Diagnosis (2–5 bullets)
-    2) Implicated nodes (id/label/qualified_name + file path)
-    3) Minimal patch (code block)
-    4) Rationale linking back to coverage + bug report
-    5) (Optional) Test plan
+  Output one JSON object for either localization or repair, e.g.
+  {"file":"path/to/file.py","line_spans":[[start,end],[start,end]],"confidence":[0.71,0.33]}
+  OR
+  {"diff":"--- a/path.py\n+++ b/path.py\n@@ -10,7 +10,7 @@\n- old\n+ new\n"}
