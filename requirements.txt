@@ -9,3 +9,4 @@ coverage
 pytest
 responses
 pynacl
+langchain_text_splitters

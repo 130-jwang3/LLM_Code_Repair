@@ -14,6 +14,7 @@ from src.llm_text_input import analyze_with_llm as run_text_llm
 from src.llm_graph_input import analyze_with_llm as run_graph_llm
 
 from src.metrics import calculate_patch_accuracy, calculate_f1
+from src.input_splitter import split_text
 
 # Static eval (optional repair scoring)
 from src.sandbox_patch import apply_unified_diff_in_sandbox
@@ -70,6 +71,14 @@ def main(mode, model="mistral"):
         print("❌ Invalid mode. Use 'text' or 'graph'.")
         sys.exit(1)
 
+    #chunk size will depend on llm token limit 
+    if model == 'mistral':
+        chunk_size = 8000
+    elif model == 'deepseek-coder':
+        chunk_size = 16000
+    elif model == 'llama2:7b':
+        chunk_size = 4000
+
     os.makedirs(REPORT_DIR, exist_ok=True)
 
     print("=== [1] PREPROCESS ===")
@@ -100,6 +109,10 @@ def main(mode, model="mistral"):
 
     print("\n=== [3] LLM ANALYSIS (single mode with ORIGINAL + MUTATED) ===")
     if mode == "text":
+        #TODO: use separated_text list 
+        
+        separated_text = split_text(TEXT_BUNDLE_PATH, chunk_size)
+        
         llm_result = run_text_llm(
             model=model,
             text_path_orig=TEXT_BUNDLE_PATH,
