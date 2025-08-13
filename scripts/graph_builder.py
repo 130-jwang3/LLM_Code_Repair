@@ -1,7 +1,6 @@
-# graph_builder.py
+# src/graph_builder.py
 import os
 import json
-import math
 import hashlib
 from itertools import count
 from collections import defaultdict
@@ -50,9 +49,21 @@ def make_summary(code: Optional[str], max_chars: int = 400) -> Optional[str]:
 def sloc(code: Optional[str]) -> int:
     return 0 if not code else len(code.splitlines())
 
+def _ts_lines(ts_node):
+    # Tree-sitter rows are 0-based; convert to 1-based inclusive
+    s = ts_node.start_point[0] + 1
+    e = ts_node.end_point[0] + 1
+    return s, e
+
 
 class CodeGraphBuilder:
-    def __init__(self):
+    def __init__(self, root_dir: Optional[str] = None):
+        """
+        If root_dir is provided, all node['path'] and node['module'] will be
+        repo-relative paths under this root. Otherwise absolute paths are used.
+        """
+        self.root_dir = os.path.abspath(root_dir) if root_dir else None
+
         self.graph: Dict[str, list[dict]] = {"nodes": [], "edges": []}
         self.node_ids = count()
         self.symbol_table: Dict[str, int] = {}   # qualified_name -> node_id
@@ -68,17 +79,22 @@ class CodeGraphBuilder:
     # -----------------
     def add_node(self, label: str, **attrs) -> int:
         node_id = next(self.node_ids)
-        node_data: Dict[str, Any] = {"id": node_id, "label": label}
+        node_data: Dict[str, Any] = {"id": node_id, "label": label, "type": attrs.pop("type", label)}
         node_data.update(attrs)
 
-        # compute sid, code_sha, summary, sloc, module placeholder
+        # compute sid, code_sha, summary, sloc, path/module placeholders
         qname = node_data.get("qualified_name") or node_data.get("name") or str(node_id)
         node_data["sid"] = stable_id(qname)
         code = node_data.get("code")
         node_data["code_sha"] = code_sha256(code)
         node_data["summary"] = make_summary(code)
         node_data["sloc"] = sloc(code)
-        node_data.setdefault("module", None)
+
+        node_data.setdefault("module", None)     # repo-relative path of file
+        node_data.setdefault("path", None)       # same as module; kept for clarity
+        node_data.setdefault("path_abs", None)   # absolute path
+        node_data.setdefault("start_line", None)
+        node_data.setdefault("end_line", None)
         node_data.setdefault("parent_id", None)
 
         self.graph["nodes"].append(node_data)
@@ -112,13 +128,21 @@ class CodeGraphBuilder:
         self.file_sources[file_path] = source_code
         self.ast_trees[file_path] = tree
 
+        rel_path = os.path.relpath(file_path, self.root_dir) if self.root_dir else os.path.abspath(file_path)
         module_name = os.path.splitext(os.path.basename(file_path))[0]
+        total_lines = source_code.decode("utf-8", "ignore").count("\n") + 1
+
         module_id = self.add_node(
             "Module",
+            type="Module",
             name=module_name,
-            path=file_path,
+            path=rel_path,
+            path_abs=os.path.abspath(file_path),
             qualified_name=module_name,               # treat module as top-level qname
-            code=source_code.decode("utf-8", errors="ignore")
+            code=source_code.decode("utf-8", errors="ignore"),
+            start_line=1,
+            end_line=total_lines,
+            module=rel_path,
         )
         self.symbol_table[module_name] = module_id
 
@@ -126,8 +150,8 @@ class CodeGraphBuilder:
         self._propagate_module(module_id)
 
     def _propagate_module(self, module_id: int) -> None:
-        """Fill `module` for the subtree of a module and ensure breadcrumbs exist."""
-        mod_name = self.node_by_id[module_id].get("name")
+        """Fill `module` (repo-relative path) for the subtree and ensure breadcrumbs exist."""
+        mod_path = self.node_by_id[module_id].get("path")  # repo-relative or abs
         stack = [module_id]
         # Build quick child index of CONTAINS edges for speed
         children = defaultdict(list)
@@ -137,25 +161,31 @@ class CodeGraphBuilder:
 
         while stack:
             cur = stack.pop()
-            self.node_by_id[cur]["module"] = mod_name
+            self.node_by_id[cur]["module"] = mod_path
+            self.node_by_id[cur].setdefault("path", mod_path)
             for ch in children.get(cur, []):
                 # make sure parent_id exists
                 if self.node_by_id[ch].get("parent_id") is None:
                     self.node_by_id[ch]["parent_id"] = cur
+                # also propagate path/module if missing
+                self.node_by_id[ch].setdefault("module", mod_path)
+                self.node_by_id[ch].setdefault("path", mod_path)
                 stack.append(ch)
 
     def _register_defs(self, node, source_code: bytes, parent_id: int, scope_name: str) -> None:
         # Classes
         if is_class(node):
+            s, e = _ts_lines(node)
             name = get_name(node, source_code)
             qname = f"{scope_name}.{name}"
             class_id = self.add_node(
-                "Class",
+                "Class", type="Class",
                 name=name,
                 qualified_name=qname,
                 code=get_code(node, source_code),
                 signature=None,
-                docstring=get_docstring_text(node, source_code)
+                docstring=get_docstring_text(node, source_code),
+                start_line=s, end_line=e,
             )
             self.symbol_table[qname] = class_id
             self.add_edge(parent_id, class_id, "CONTAINS")
@@ -165,17 +195,19 @@ class CodeGraphBuilder:
 
         # Functions / Methods
         if is_function(node):
+            s, e = _ts_lines(node)
             name = get_name(node, source_code)
             qname = f"{scope_name}.{name}"
             parent_label = self.node_by_id[parent_id]["label"]
             label = "Method" if parent_label == "Class" else "Function"
             func_id = self.add_node(
-                label,
+                label, type=label,
                 name=name,
                 qualified_name=qname,
                 code=get_code(node, source_code),
                 signature=get_signature(node, source_code),
-                docstring=get_docstring_text(node, source_code)
+                docstring=get_docstring_text(node, source_code),
+                start_line=s, end_line=e,
             )
             self.symbol_table[qname] = func_id
             self.add_edge(parent_id, func_id, "CONTAINS")
@@ -185,31 +217,36 @@ class CodeGraphBuilder:
 
         # Control flow
         if is_if(node):
-            cf_id = self.add_node("If", code=get_code(node, source_code))
+            s, e = _ts_lines(node)
+            cf_id = self.add_node("If", type="If", code=get_code(node, source_code), start_line=s, end_line=e)
             self.add_edge(parent_id, cf_id, "CONTAINS")
             for child in node.children:
                 self._register_defs(child, source_code, cf_id, scope_name)
             return
         if is_for(node):
-            cf_id = self.add_node("For", code=get_code(node, source_code))
+            s, e = _ts_lines(node)
+            cf_id = self.add_node("For", type="For", code=get_code(node, source_code), start_line=s, end_line=e)
             self.add_edge(parent_id, cf_id, "CONTAINS")
             for child in node.children:
                 self._register_defs(child, source_code, cf_id, scope_name)
             return
         if is_while(node):
-            cf_id = self.add_node("While", code=get_code(node, source_code))
+            s, e = _ts_lines(node)
+            cf_id = self.add_node("While", type="While", code=get_code(node, source_code), start_line=s, end_line=e)
             self.add_edge(parent_id, cf_id, "CONTAINS")
             for child in node.children:
                 self._register_defs(child, source_code, cf_id, scope_name)
             return
         if is_try(node):
-            cf_id = self.add_node("Try", code=get_code(node, source_code))
+            s, e = _ts_lines(node)
+            cf_id = self.add_node("Try", type="Try", code=get_code(node, source_code), start_line=s, end_line=e)
             self.add_edge(parent_id, cf_id, "CONTAINS")
             for child in node.children:
                 self._register_defs(child, source_code, cf_id, scope_name)
             return
         if is_with(node):
-            cf_id = self.add_node("With", code=get_code(node, source_code))
+            s, e = _ts_lines(node)
+            cf_id = self.add_node("With", type="With", code=get_code(node, source_code), start_line=s, end_line=e)
             self.add_edge(parent_id, cf_id, "CONTAINS")
             for child in node.children:
                 self._register_defs(child, source_code, cf_id, scope_name)
@@ -217,15 +254,21 @@ class CodeGraphBuilder:
 
         # Other constructs
         if is_assignment(node):
-            assign_id = self.add_node("Assignment", code=get_code(node, source_code))
+            s, e = _ts_lines(node)
+            assign_id = self.add_node("Assignment", type="Assignment", code=get_code(node, source_code),
+                                      start_line=s, end_line=e)
             self.add_edge(parent_id, assign_id, "CONTAINS")
             return
         if is_decorator(node):
-            deco_id = self.add_node("Decorator", code=get_code(node, source_code))
+            s, e = _ts_lines(node)
+            deco_id = self.add_node("Decorator", type="Decorator", code=get_code(node, source_code),
+                                    start_line=s, end_line=e)
             self.add_edge(parent_id, deco_id, "CONTAINS")
             return
         if is_docstring(node, source_code):
-            doc_id = self.add_node("Docstring", code=get_code(node, source_code))
+            s, e = _ts_lines(node)
+            doc_id = self.add_node("Docstring", type="Docstring", code=get_code(node, source_code),
+                                   start_line=s, end_line=e)
             self.add_edge(parent_id, doc_id, "CONTAINS")
             return
 
@@ -244,8 +287,9 @@ class CodeGraphBuilder:
 
     def _resolve_edges(self, node, source_code: bytes, parent_id: int, scope_name: str) -> None:
         if is_import(node):
+            s, e = _ts_lines(node)
             import_text = get_code(node, source_code).strip()
-            import_id = self.add_node("Import", code=import_text)
+            import_id = self.add_node("Import", type="Import", code=import_text, start_line=s, end_line=e)
             self.add_edge(parent_id, import_id, "IMPORTS")
             return
 
@@ -264,7 +308,8 @@ class CodeGraphBuilder:
             else:
                 # Create resolvable external node with a qname and sid
                 ext_qname = func_name
-                ext_id = self.add_node("ExternalFunction", name=func_name, qualified_name=ext_qname)
+                ext_id = self.add_node("ExternalFunction", type="ExternalFunction",
+                                       name=func_name, qualified_name=ext_qname)
                 self.add_edge(parent_id, ext_id, "CALLS")
             return
 

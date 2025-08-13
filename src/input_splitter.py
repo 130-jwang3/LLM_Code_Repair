@@ -1,20 +1,39 @@
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_text_splitters import RecursiveJsonSplitter
-import tiktoken
+# src/input_splitter.py
+from __future__ import annotations
+
 import json
 import os
+from typing import Dict, List, Any, Tuple
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+import tiktoken
 
 
-# returns list of dictionaries, first one being file tree, the rest will be file sections and its contents
-def split_text(input, chunk_size):
-    separated_text = []
-    # input will be a json file
+# ---------------------------
+# Text bundle splitter (files -> code chunks)
+# ---------------------------
+
+def split_text(input_path: str, chunk_size: int) -> List[Dict[str, Any]]:
+    """
+    Split repo_text_bundle.json into chunked code sections with global line spans.
+
+    Returns a list of dicts:
+      - first entry: {"file_tree": "..."}
+      - subsequent: {
+            "file": "<repo-relative path>",
+            "section": <1..N>,
+            "content": "<code subsequence>",
+            "start_line": <int>, "end_line": <int>,
+            "num_lines": <int>
+        }
+    """
+    separated_text: List[Dict[str, Any]] = []
     try:
-        with open(input, "r", encoding="utf-8") as f:
+        with open(input_path, "r", encoding="utf-8") as f:
             src = json.load(f)
 
         # explicit telemetry helps
-        print(f"[split_text] loading: {os.path.abspath(input)}  chunk_size={chunk_size}")
+        print(f"[split_text] loading: {os.path.abspath(input_path)}  chunk_size={chunk_size}")
         n_files = len(src.get("files", []))
         print(f"[split_text] bundle files[]: {n_files}")
 
@@ -40,7 +59,7 @@ def split_text(input, chunk_size):
                 print(f"[split_text] WARN: splitter returned non-list for {path}")
                 continue
 
-            scan_pos = 0  # <-- NEW: move forward through the file as we match chunks
+            scan_pos = 0  # move forward through the file as we match chunks
             for j, sec in enumerate(chunks, start=1):
                 try:
                     # prefer matching at/after last end to avoid earlier duplicate hits
@@ -75,7 +94,7 @@ def split_text(input, chunk_size):
                 })
 
     except FileNotFoundError:
-        print(f"Error: {input} not found")
+        print(f"Error: {input_path} not found")
     except json.JSONDecodeError:
         print("Error: Invalid JSON")
     except Exception as e:
@@ -89,56 +108,121 @@ def split_text(input, chunk_size):
     return separated_text
 
 
-def split_ast(input, chunk_size):
-    modules = {}
-    results = []
+# ---------------------------
+# Graph bundle splitter (nodes -> graph chunks)
+# ---------------------------
+
+def _tok_len(enc, s: str) -> int:
+    return len(enc.encode(s or ""))
+
+def _node_text(n: Dict[str, Any], code_max: int = 400) -> str:
+    """
+    Compact per-node textual representation for the LLM prompt.
+    """
+    typ = n.get("type") or n.get("label") or "Node"
+    name = n.get("qualified_name") or n.get("name") or ""
+    s = n.get("start_line")
+    e = n.get("end_line")
+    hdr = f"[{typ}] {name} L{s}-{e}".strip()
+    code = (n.get("code") or n.get("summary") or "").strip()
+    if code_max and code:
+        if len(code) > code_max:
+            code = code[: code_max // 2] + "\n...\n" + code[-(code_max // 2):]
+    return f"{hdr}\n{code}\n---\n"
+
+
+def split_ast(graph_json_path: str, chunk_size: int) -> List[Dict[str, Any]]:
+    """
+    Split graph.json (with {"nodes": [...], "edges": [...]}) into LLM-sized chunks
+    per source file. Each chunk includes a compact textual `content` for prompting
+    plus the raw `nodes` list for downstream use.
+
+    Returns list of dicts:
+      {
+        "file": "<repo-relative path>",
+        "section": <1..N>,
+        "nodes": [ {node}, ... ],
+        "content": "<compact text for these nodes>",
+        "start_line": <min start>, "end_line": <max end>
+      }
+    """
+    results: List[Dict[str, Any]] = []
     try:
-        with open(input) as f:
-            src = json.load(f)['nodes']
+        with open(graph_json_path, "r", encoding="utf-8") as f:
+            g = json.load(f)
 
-        #first group up the nodes by module
-        for node in src:
-            module = node['module']
-            if module not in modules:
-                modules[module] = []
-            modules[module].append(node)
+        all_nodes = g.get("nodes") or []
+        # group nodes by file (prefer 'module', else 'path')
+        by_file: Dict[str, List[Dict[str, Any]]] = {}
+        for n in all_nodes:
+            file_key = n.get("module") or n.get("path")
+            if not file_key:
+                # skip nodes not tied to a source file (e.g., purely external)
+                continue
+            by_file.setdefault(file_key, []).append(n)
 
-        #will treat the group of nodes as text and split by the border of the nodes
-        splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder (
-            encoding_name='cl100k_base',
-            chunk_size=chunk_size,
-            chunk_overlap = 50,
-            separators= ["}, {"]
-        )
+        enc = tiktoken.get_encoding("cl100k_base")
 
-        #if module is too big, it will be split with labeled sections
-        for k,v in modules.items():
-            chunks = splitter.split_text(json.dumps(v))
-            for j, sec in enumerate(chunks):
-                results.append({"module": k, "section" : j+1, "nodes": sec})
-        print(len(results))
+        for file_path, nodes in by_file.items():
+            # sort nodes by start_line for a stable order
+            nodes.sort(key=lambda x: (x.get("start_line") or 10**12, x.get("end_line") or 10**12))
+
+            current_nodes: List[Dict[str, Any]] = []
+            current_text_parts: List[str] = []
+            current_tokens = 0
+            section = 0
+
+            def _flush():
+                nonlocal current_nodes, current_text_parts, current_tokens, section
+                if not current_nodes:
+                    return
+                section += 1
+                # compute span from nodes that have line info
+                span_lines = [(n.get("start_line"), n.get("end_line"))
+                              for n in current_nodes if isinstance(n.get("start_line"), int) and isinstance(n.get("end_line"), int)]
+                if span_lines:
+                    s_min = min(s for s, _ in span_lines)
+                    e_max = max(e for _, e in span_lines)
+                else:
+                    s_min = e_max = None
+
+                results.append({
+                    "file": file_path,
+                    "section": section,
+                    "nodes": current_nodes,
+                    "content": "".join(current_text_parts),
+                    "start_line": s_min,
+                    "end_line": e_max,
+                })
+                current_nodes = []
+                current_text_parts = []
+                current_tokens = 0
+
+            for n in nodes:
+                piece = _node_text(n, code_max=400)
+                piece_tokens = _tok_len(enc, piece)
+                # if one node is huge, emit it alone
+                if current_tokens == 0 and piece_tokens >= chunk_size:
+                    current_nodes = [n]
+                    current_text_parts = [piece]
+                    current_tokens = piece_tokens
+                    _flush()
+                    continue
+
+                if current_tokens + piece_tokens > chunk_size and current_nodes:
+                    _flush()
+
+                current_nodes.append(n)
+                current_text_parts.append(piece)
+                current_tokens += piece_tokens
+
+            _flush()
+
+        print(f"[split_ast] files={len(by_file)} chunks={len(results)}")
 
     except FileNotFoundError:
-        print(f"Error: {input} not found")
+        print(f"Error: {graph_json_path} not found")
     except json.JSONDecodeError:
         print("Error: Invalid JSON ")
 
-
     return results
-
-# example usage of split_text
-# def main():
-
-#     nodes = split_ast("data/graphs/graph.json", 4000)
-#     print(nodes[49])
-#     print('\n')
-#     print(nodes[50])
-#     print('\n')
-#     print(nodes[51])
-
-
-#     separated = split_text("LLM_Code_Repair/data/text/repo_text_bundle.json", 4000)
-#     print(len(separated))
-#     print(separated[99])
-
-# main()

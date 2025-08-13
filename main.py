@@ -53,6 +53,7 @@ BUG_REPORT_FILES = [
 ]
 from src.runlog import RunLogger
 import logging
+
 os.makedirs(REPORT_DIR, exist_ok=True)
 log_path = os.path.join(REPORT_DIR, f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 logging.basicConfig(
@@ -66,6 +67,7 @@ os.makedirs(RUN_DIR, exist_ok=True)
 RUN_LOG = RunLogger(root=RUN_DIR, run_name=STAMP)
 # If you also want console:
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+
 
 def load_bug_reports():
     reports = []
@@ -88,11 +90,15 @@ def main(mode, model="mistral"):
         sys.exit(1)
 
     # token budget heuristic per model
-    chunk_size = 8000
-    if model == "deepseek-coder":
-        chunk_size = 16000
-    elif model in ("llama2:7b", "gemma2:2b"):
-        chunk_size = 4000
+    chunk_size = 8000  # default safe fallback
+    m = model.lower()
+
+    if "mistral" in m:
+        chunk_size = 30000
+    elif "deepseek-coder" in m:
+        chunk_size = 14000
+    elif "gemma2" in m:
+        chunk_size = 6000
 
     os.makedirs(REPORT_DIR, exist_ok=True)
 
@@ -149,17 +155,32 @@ def main(mode, model="mistral"):
         print(f"[TEXT] attempts={stats.get('chunk_attempts')} hits={stats.get('chunks_with_detections')} "
               f"files={stats.get('files')} chunks={stats.get('chunks_mutated')} "
               f"skipped={stats.get('chunks_skipped_no_lineinfo')} "
-              f"duration={stats.get('duration_sec')}s")
+              f"duration={stats.get('total_duration_sec')}s")
         print(f"[TEXT] debug artifacts: {debug_dir}")
         RUN_LOG.write("text_llm_done", stats=(llm_result or {}).get("stats"))
     else:  # graph
+        debug_dir = os.path.join(REPORT_DIR, f"debug_graph_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         llm_result = run_graph_llm(
             model=model,
             graph_path_orig=GRAPH_PATH,
             graph_path_mut=GRAPH_MUT_PATH,
             coverage_path=COVERAGE_FILE,
             bug_reports=bug_reports,
+            chunk_size=chunk_size,
+            verbose=True,
+            max_chunks=None,
+            debug_dir=debug_dir,
+            logger=RUN_LOG,
         )
+        stats = (llm_result or {}).get("stats", {})
+        print(f"[GRAPH] attempts={stats.get('chunk_attempts')} "
+              f"hits={stats.get('chunks_with_detections')} "
+              f"files={stats.get('files')} chunks={stats.get('chunks_mutated')} "
+              f"skipped={stats.get('chunks_skipped_no_lineinfo')} "
+              f"duration={stats.get('total_duration_sec')}s")
+        print(f"[GRAPH] debug artifacts: {debug_dir}")
+        RUN_LOG.write("graph_llm_done", stats=stats)
+
 
     # === Detection metrics vs mutated_files.json ===
     print("\n=== [4] DETECTION METRICS (vs mutated_files.json) ===")
@@ -215,7 +236,6 @@ def main(mode, model="mistral"):
         json.dump(report_data, f, indent=2)
     RUN_LOG.write("report_written", path=report_path, mode=mode)
     print(f"\n {mode.capitalize()} analysis complete. Report saved to {report_path}")
-
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

@@ -92,14 +92,7 @@ def _sanitize_name(s: str) -> str:
 
 
 def _fit_chars(text: str, max_chars: int) -> str:
-    if text is None:
-        return ""
-    if len(text) <= max_chars:
-        return text
-    # keep head and tail to preserve some context
-    head = text[: max_chars // 2]
-    tail = text[-(max_chars - len(head) - 30):]
-    return f"{head}\n...\n{tail}"
+    return text or ""
 
 
 # -------------------------
@@ -205,8 +198,9 @@ def _summarize_original_repo(
             user_text=user_text,
             temperature=0.2,
             top_p=0.95,
+            num_ctx=chunk_size,
         )
-        if logger and hits < 5:  # keep it small
+        if logger:  # keep it small
             logger.dump_pair(
                 prefix=f"index_{_sanitize_name(file_path)}_sec{section}",
                 system_text=system_text,
@@ -433,9 +427,10 @@ def analyze_with_llm(
                 user_text=user_text,
                 temperature=0.2,
                 top_p=0.95,
+                num_ctx=chunk_size,
             )
 
-            if logger and detections < 5:
+            if logger:
                 logger.dump_pair(
                     prefix=f"detect_{_sanitize_name(file_path)}_lines_{m_s}_{m_e}",
                     system_text=system_text,
