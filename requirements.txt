@@ -9,4 +9,8 @@ coverage
 pytest
 responses
 pynacl
-langchain_text_splitters
+langchain
+langchain-experimental
+tiktoken
+cryptography
+pyjwt[crypto]

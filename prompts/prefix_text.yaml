@@ -32,6 +32,12 @@ instructions: >
     - Explain the bug concisely (what/why), referencing coverage or reports when helpful.
     - Propose a minimal fix. Include a precise code patch or replacement snippet.
       Prefer targeted edits over broad rewrites.
+  Return ONLY JSON exactly like:
+  {"findings":[{"file":"<path>","line_spans":[[start,end],...],"confidence":0.0}]}
+  Where:
+    - line_spans is an array of pairs [start,end] (integers, 1-based, inclusive).
+    - Do NOT use dictionaries or nested arrays inside line_spans.
+    - If nothing is found, return {"findings":[{"file":"<path>","line_spans":[], "confidence":0.0}]}.
 
 output_format: >
   Output one JSON object for either localization or repair, e.g.

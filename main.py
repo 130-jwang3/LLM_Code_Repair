@@ -1,7 +1,9 @@
+# main.py
 import os
 import sys
 import json
 from datetime import datetime
+from typing import Optional
 
 # === Step imports ===
 from scripts.clone_repo import clone_repo_if_needed
@@ -14,7 +16,6 @@ from src.llm_text_input import analyze_with_llm as run_text_llm
 from src.llm_graph_input import analyze_with_llm as run_graph_llm
 
 from src.metrics import calculate_patch_accuracy, calculate_f1
-from src.input_splitter import split_text
 
 # Static eval (optional repair scoring)
 from src.sandbox_patch import apply_unified_diff_in_sandbox
@@ -47,10 +48,24 @@ REPORT_DIR = os.path.join(ROOT_DIR, "reports")
 
 BUG_REPORT_FILES = [
     os.path.join(ISSUES_DIR, "pygithub_issues_1_closed.json"),
-    os.path.join(ISSUES_DIR, "pygithub_issue_e_closed.json"),
+    os.path.join(ISSUES_DIR, "pygithub_issues_2_closed.json"),
     os.path.join(ISSUES_DIR, "pygithub_issues_open.json"),
 ]
-
+from src.runlog import RunLogger
+import logging
+os.makedirs(REPORT_DIR, exist_ok=True)
+log_path = os.path.join(REPORT_DIR, f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+logging.basicConfig(
+    filename=log_path,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+STAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+RUN_DIR = os.path.join(REPORT_DIR, f"run_{STAMP}")
+os.makedirs(RUN_DIR, exist_ok=True)
+RUN_LOG = RunLogger(root=RUN_DIR, run_name=STAMP)
+# If you also want console:
+logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 def load_bug_reports():
     reports = []
@@ -60,66 +75,83 @@ def load_bug_reports():
                 with open(file_path, "r", encoding="utf-8") as f:
                     reports.extend(json.load(f))
             except Exception as e:
-                print(f"⚠️ Failed to load bug report file {file_path}: {e}")
+                print(f"[WARN] Failed to load bug report file {file_path}: {e}")
         else:
-            print(f"⚠️ Missing bug report file: {file_path}")
+            print(f"[WARN] Missing bug report file: {file_path}")
     return reports
 
 
 def main(mode, model="mistral"):
+    RUN_LOG.write("start", mode=mode, model=model, repo=REPO_URL, pid=os.getpid())
     if mode not in ("text", "graph"):
-        print("❌ Invalid mode. Use 'text' or 'graph'.")
+        print("[ERROR] Invalid mode. Use 'text' or 'graph'.")
         sys.exit(1)
 
-    #chunk size will depend on llm token limit 
-    if model == 'mistral':
-        chunk_size = 8000
-    elif model == 'deepseek-coder':
+    # token budget heuristic per model
+    chunk_size = 8000
+    if model == "deepseek-coder":
         chunk_size = 16000
-    elif model == 'llama2:7b':
+    elif model in ("llama2:7b", "gemma2:2b"):
         chunk_size = 4000
 
     os.makedirs(REPORT_DIR, exist_ok=True)
 
     print("=== [1] PREPROCESS ===")
     clone_repo_if_needed(REPO_URL, RAW_REPO)
+    RUN_LOG.write("clone_done", path=RAW_REPO)
 
     bug_reports = load_bug_reports()
-    print(f"📄 Loaded {len(bug_reports)} bug reports from pre-existing JSON files")
+    print(f"[LOG] Loaded {len(bug_reports)} bug reports from pre-existing JSON files")
+    RUN_LOG.write("bugs_loaded", count=len(bug_reports))
 
-    # If you feed coverage only during pretraining, you can comment this out.
+    # Coverage (tolerant; use the resilient function I shared earlier if you haven't)
     analyze_test_coverage(source_dir=RAW_REPO, output_dir=COVERAGE_DIR, repo_path=RAW_REPO)
+    RUN_LOG.write("coverage_done", path=COVERAGE_FILE)
 
-    # Build ORIGINAL artifacts
+    # ORIGINAL artifacts
     print("\n=== [1.1] BUILD ORIGINAL ARTIFACTS ===")
     os.makedirs(os.path.dirname(TEXT_BUNDLE_PATH), exist_ok=True)
     build_text_repo(input_dir=RAW_REPO, output_file=TEXT_BUNDLE_PATH)
     os.makedirs(os.path.dirname(GRAPH_PATH), exist_ok=True)
     build_graph(RAW_REPO, GRAPH_PATH)
+    RUN_LOG.write("built_original_artifacts", text=TEXT_BUNDLE_PATH, graph=GRAPH_PATH)
 
     print("\n=== [2] MUTATION GENERATION ===")
     generate_faulty_mutant_code(RAW_REPO, MUTANTS_DIR)
+    RUN_LOG.write("mutants_generated", dir=MUTANTS_DIR)
 
-    # Build MUTATED artifacts
+    # MUTATED artifacts
     print("\n=== [2.1] BUILD MUTATED ARTIFACTS ===")
     os.makedirs(os.path.dirname(TEXT_BUNDLE_MUT_PATH), exist_ok=True)
     build_text_repo(input_dir=MUTANTS_DIR, output_file=TEXT_BUNDLE_MUT_PATH)
     os.makedirs(os.path.dirname(GRAPH_MUT_PATH), exist_ok=True)
     build_graph(MUTANTS_DIR, GRAPH_MUT_PATH)
+    RUN_LOG.write("built_mutated_artifacts", text=TEXT_BUNDLE_MUT_PATH, graph=GRAPH_MUT_PATH)
 
-    print("\n=== [3] LLM ANALYSIS (single mode with ORIGINAL + MUTATED) ===")
+    print("\n=== [3] LLM ANALYSIS ===")
     if mode == "text":
-        #TODO: use separated_text list 
-        
-        separated_text = split_text(TEXT_BUNDLE_PATH, chunk_size)
-        
+        debug_dir = os.path.join(REPORT_DIR, f"debug_text_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         llm_result = run_text_llm(
             model=model,
             text_path_orig=TEXT_BUNDLE_PATH,
             text_path_mut=TEXT_BUNDLE_MUT_PATH,
             coverage_path=COVERAGE_FILE,
             bug_reports=bug_reports,
+            chunk_size=chunk_size,
+            verbose=True,  # <— show progress
+            max_chunks=None,  # <— set e.g. 40 to quick-test
+            debug_dir=debug_dir,  # <— dumps samples & summary
+            logger=RUN_LOG,
         )
+
+        # After detection metrics:
+        stats = (llm_result or {}).get("stats", {})
+        print(f"[TEXT] attempts={stats.get('chunk_attempts')} hits={stats.get('chunks_with_detections')} "
+              f"files={stats.get('files')} chunks={stats.get('chunks_mutated')} "
+              f"skipped={stats.get('chunks_skipped_no_lineinfo')} "
+              f"duration={stats.get('duration_sec')}s")
+        print(f"[TEXT] debug artifacts: {debug_dir}")
+        RUN_LOG.write("text_llm_done", stats=(llm_result or {}).get("stats"))
     else:  # graph
         llm_result = run_graph_llm(
             model=model,
@@ -134,6 +166,7 @@ def main(mode, model="mistral"):
     detection_json = llm_result.get("detection") if isinstance(llm_result, dict) else None
     det_metrics = evaluate_detection(detection_json or {}, MUTANTS_DIR)
     print("Detection:", det_metrics)
+    RUN_LOG.write("detection_metrics", **det_metrics)
 
     # === Optional static repair scoring if a unified diff was returned ===
     print("\n=== [5] OPTIONAL STATIC REPAIR EVAL ===")
@@ -153,7 +186,7 @@ def main(mode, model="mistral"):
         else:
             print("Sandbox patch failed; see patch_application for details.")
 
-    # Placeholders (kept, but not central now)
+    # Placeholders (optional legacy)
     print("\n=== [6] LEGACY PLACEHOLDER METRICS ===")
     predictions = ["patch1"] if static_metrics else []
     labels = ["patch1"] if static_metrics else []
@@ -180,8 +213,8 @@ def main(mode, model="mistral"):
     )
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report_data, f, indent=2)
-
-    print(f"\n✅ {mode.capitalize()} analysis complete. Report saved to {report_path}")
+    RUN_LOG.write("report_written", path=report_path, mode=mode)
+    print(f"\n {mode.capitalize()} analysis complete. Report saved to {report_path}")
 
 
 if __name__ == "__main__":

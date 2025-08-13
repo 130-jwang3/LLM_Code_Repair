@@ -1,62 +1,63 @@
 import os, json
-from typing import List, Dict, Any, Tuple
+from collections import defaultdict
 
-def _overlap(a: Tuple[int,int], b: Tuple[int,int]) -> bool:
-    return not (a[1] < b[0] or b[1] < a[0])
-
-def load_mutations(mutants_dir: str) -> Dict[str, List[Tuple[int,int]]]:
-    """Returns {rel_path: [(s,e),...]} for mutated lines."""
+def _load_mutations(mutants_dir):
     path = os.path.join(mutants_dir, "mutated_files.json")
-    if not os.path.isfile(path): return {}
+    if not os.path.exists(path):
+        return {}
     data = json.load(open(path, "r", encoding="utf-8"))
-    m: Dict[str, List[Tuple[int,int]]] = {}
-    for e in data:
-        if e.get("action")=="mutated" and e.get("ok") and e.get("rel_path","").endswith(".py"):
-            spans=[]
-            for mm in e.get("mutations", []):
-                s = mm.get("lineno"); e2 = mm.get("end_lineno") or s
-                if s: spans.append((int(s), int(e2)))
-            if spans: m[e["rel_path"]] = spans
-    return m
+    # expected shape: { "files": [{"path": "...", "mutations": [{"start":..,"end":..}, ...]}], ... }
+    gt = defaultdict(list)
+    for f in data.get("files", []):
+        p = f.get("path")
+        for m in f.get("mutations", []):
+            s, e = int(m.get("start", 0)), int(m.get("end", 0))
+            if p and s and e and s <= e:
+                gt[p].append([s, e])
+    return gt
 
-def evaluate_detection(detection_json: Dict[str, Any], mutants_dir: str) -> Dict[str, Any]:
-    """Compute precision/recall/F1 by span overlap per file."""
-    gt = load_mutations(mutants_dir)
-    pred = detection_json.get("findings", []) if isinstance(detection_json, dict) else []
+def _overlap(a, b):
+    s1, e1 = a; s2, e2 = b
+    inter = max(0, min(e1, e2) - max(s1, s2) + 1)
+    if inter == 0:
+        return 0.0
+    union = (e1 - s1 + 1) + (e2 - s2 + 1) - inter
+    return inter / union
 
-    # build per-file predicted spans
-    pd: Dict[str, List[Tuple[int,int]]] = {}
-    for f in pred:
-        path = f.get("file")
-        # normalize to repo-relative path used in mutated_files.json
-        if path and (path in gt or True):
-            spans = [(int(s), int(e)) for s,e in f.get("line_spans", []) if isinstance(s,int) and isinstance(e,int)]
-            if spans:
-                pd.setdefault(path, []).extend(spans)
+def evaluate_detection(detection_json, mutants_dir, iou_thresh=0.2):
+    gt = _load_mutations(mutants_dir)
+    pred = defaultdict(list)
+    for item in detection_json.get("findings", []):
+        f = item.get("file")
+        for s, e in item.get("line_spans", []):
+            try:
+                s, e = int(s), int(e)
+            except Exception:
+                continue
+            if f and s <= e:
+                pred[f].append([s, e])
 
-    # count matches by any-overlap
     tp = fp = fn = 0
-    # For each predicted span, if it overlaps any GT span in same file, count TP and mark GT span as used once
-    used = {k: [False]*len(v) for k,v in gt.items()}
-    for path, spans in pd.items():
-        gsp = gt.get(path, [])
-        for s,e in spans:
+    for fpath, gts in gt.items():
+        used = [False] * len(gts)
+        for p in pred.get(fpath, []):
             hit = False
-            for i, (gs, ge) in enumerate(gsp):
-                if not used.get(path, [])[i] and _overlap((s,e),(gs,ge)):
-                    used[path][i] = True
-                    tp += 1; hit = True; break
+            for i, g in enumerate(gts):
+                if not used[i] and _overlap(p, g) >= iou_thresh:
+                    used[i] = True
+                    tp += 1
+                    hit = True
+                    break
             if not hit:
                 fp += 1
+        fn += used.count(False)
 
-    # FN = GT spans not matched
-    for path, gsp in gt.items():
-        for i in range(len(gsp)):
-            if not used[path][i]:
-                fn += 1
+    # count predictions on files with no GT as FP
+    for fpath, preds in pred.items():
+        if fpath not in gt:
+            fp += len(preds)
 
-    prec = tp / (tp + fp) if (tp+fp)>0 else 0.0
-    rec  = tp / (tp + fn) if (tp+fn)>0 else 0.0
-    f1   = (2*prec*rec)/(prec+rec) if (prec+rec)>0 else 0.0
-
-    return {"tp": tp, "fp": fp, "fn": fn, "precision": prec, "recall": rec, "f1": f1}
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) else 0.0
+    f1        = (2*precision*recall)/(precision+recall) if (precision+recall) else 0.0
+    return {"tp": tp, "fp": fp, "fn": fn, "precision": precision, "recall": recall, "f1": f1}
