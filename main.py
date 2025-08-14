@@ -93,9 +93,9 @@ def main(mode, model="mistral"):
     chunk_size = 8000  # default
     m = model.lower()
     if "mistral" in m:
-        chunk_size = 30000  # Ollama mistral shows 32k ctx; be conservative
+        chunk_size = 16000  # Ollama mistral shows 32k ctx; be conservative
     elif "deepseek-coder" in m:
-        chunk_size = 14000
+        chunk_size = 12000
     elif "gemma2" in m:
         chunk_size = 6000
 

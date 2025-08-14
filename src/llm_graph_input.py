@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Any, Dict, List
 
 from .runlog import RunLogger
-from .config import PROMPT_PREFIX_TEXT as PROMPT_PREFIX  # reuse same yaml for simplicity
+from .config import PROMPT_PREFIX_GRAPH as PROMPT_PREFIX  # <-- use graph prefix
 from .llm_common import chat_or_generate, extract_first_json
 from .input_splitter import split_ast
 
@@ -34,7 +34,7 @@ def _sanitize_name(s: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in s)[:120]
 
 def _fit(text: Optional[str], max_chars: int) -> str:
-    # No truncation: always return full text
+    # No truncation here; upstream chunking already bounds size.
     return text or ""
 
 def _merge_spans(spans: List[List[int]]) -> List[List[int]]:
@@ -181,9 +181,12 @@ def _summarize_original_graph(
             model=model,
             system_text=system_text,
             user_text=user_text,
-            temperature=0.2,
+            temperature=0.0,      # tighter/safer
             top_p=0.95,
             num_ctx=chunk_size,
+            timeout_s=240,
+            retries=5,
+            enforce_json=True,    # request strict JSON
         )
         if logger and hits < 5:
             logger.dump_pair(
@@ -217,7 +220,6 @@ def _summarize_original_graph(
                 isinstance(se[0], (int, float)) and isinstance(se[1], (int, float))):
                 loc_s = int(se[0]); loc_e = int(se[1])
                 reason = se[2] if len(se) >= 3 and isinstance(se[2], str) else ""
-                # These are chunk-local; map to file-global via chunk start
                 if isinstance(s_line, int):
                     gs = s_line + (loc_s - 1)
                     ge = s_line + (loc_e - 1)
@@ -352,11 +354,8 @@ def analyze_with_llm(
         }, ensure_ascii=False)
         sm_text = _fit(sm_text, 1800)
 
-        # prepare a tiny raw-orig text (optional)
-        orig_compact = ""
-        if orig_list:
-            # pick the first overlapping chunk later; for now keep first chunk’s compact content
-            orig_compact = orig_list[0].get("content", "")
+        # optional tiny raw-orig text
+        orig_compact = orig_list[0].get("content", "") if orig_list else ""
 
         for mut_sec in sections:
             if max_chunks is not None and attempts >= max_chunks:
@@ -368,7 +367,7 @@ def analyze_with_llm(
                 skipped_no_lines += 1
                 continue
 
-            # find an ORIGINAL chunk that overlaps for a bit of raw context
+            # find an ORIGINAL chunk that overlaps
             raw_overlap = ""
             for oc in orig_list:
                 o_s = oc.get("start_line"); o_e = oc.get("end_line")
@@ -397,9 +396,12 @@ def analyze_with_llm(
                 model=model,
                 system_text=system_text,
                 user_text=user_text,
-                temperature=0.2,
+                temperature=0.0,
                 top_p=0.95,
                 num_ctx=chunk_size,
+                timeout_s=240,
+                retries=5,
+                enforce_json=True,   # request strict JSON
             )
 
             if logger and detections < 5:
@@ -413,6 +415,19 @@ def analyze_with_llm(
                 continue
 
             parsed = extract_first_json(out) or {}
+            # tolerant wrappers: accept list-of-spans or top-level spans
+            if isinstance(parsed, list):
+                parsed = {"findings": [{"file": file_path,
+                                        "line_spans": parsed,
+                                        "confidence": 0.0}]}
+            elif isinstance(parsed, dict) and "findings" not in parsed:
+                ls = (parsed.get("line_spans") or parsed.get("spans") or
+                      parsed.get("ranges") or parsed.get("lines") or [])
+                if ls:
+                    parsed = {"findings": [{"file": file_path,
+                                            "line_spans": ls,
+                                            "confidence": float(parsed.get("confidence", 0.0))}]}
+
             if not (isinstance(parsed, dict) and "findings" in parsed):
                 if verbose:
                     print(f"[GRAPH] no JSON findings on attempt {attempts}")

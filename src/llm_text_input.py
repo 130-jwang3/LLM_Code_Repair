@@ -19,7 +19,6 @@ def _normalize_line_spans(raw):
       - [{'start': s, 'end': e}, ...]
       - nested lists like [[[s,e]], ...]
     """
-
     def _add(out, a, b):
         try:
             ia, ib = int(a), int(b)
@@ -40,19 +39,16 @@ def _normalize_line_spans(raw):
             continue
         if isinstance(item, (list, tuple)):
             if len(item) >= 2 and isinstance(item[0], (int, str)) and isinstance(item[1], (int, str)):
-                _add(spans, item[0], item[1])
-                continue
+                _add(spans, item[0], item[1]); continue
             flattened = False
             for sub in item:
                 if isinstance(sub, (list, tuple)) and len(sub) >= 2:
-                    _add(spans, sub[0], sub[1])
-                    flattened = True
+                    _add(spans, sub[0], sub[1]); flattened = True
             if flattened:
                 continue
         if isinstance(item, dict):
-            start = item.get("start") or item.get("s") or item.get("from") or item.get("line_start") or item.get(
-                "lineStart")
-            end = item.get("end") or item.get("e") or item.get("to") or item.get("line_end") or item.get("lineEnd")
+            start = item.get("start") or item.get("s") or item.get("from") or item.get("line_start") or item.get("lineStart")
+            end   = item.get("end")   or item.get("e") or item.get("to")   or item.get("line_end")   or item.get("lineEnd")
             if start is not None and end is not None:
                 _add(spans, start, end)
     return spans
@@ -92,6 +88,7 @@ def _sanitize_name(s: str) -> str:
 
 
 def _fit_chars(text: str, max_chars: int) -> str:
+    # No truncation; upstream chunker handles size.
     return text or ""
 
 
@@ -100,16 +97,16 @@ def _fit_chars(text: str, max_chars: int) -> str:
 # -------------------------
 
 def _summarize_original_repo(
-        *,
-        model: str,
-        text_path_orig: str,
-        chunk_size: int,
-        coverage: dict,
-        bug_reports: list,
-        debug_dir: str | None,
-        verbose: bool,
-        max_chunks: int | None,
-        logger: Optional[RunLogger] = None,
+    *,
+    model: str,
+    text_path_orig: str,
+    chunk_size: int,
+    coverage: dict,
+    bug_reports: list,
+    debug_dir: str | None,
+    verbose: bool,
+    max_chunks: int | None,
+    logger: Optional[RunLogger] = None,
 ):
     """
     Build per-file summaries of ORIGINAL code using LLM.
@@ -131,13 +128,9 @@ def _summarize_original_repo(
             except Exception:
                 pass
 
-    # load prefix sections (reuse YAML if it has general task text)
     prefix = _load_yaml(PROMPT_PREFIX_TEXT)
-
-    # split original bundle
     orig_chunks = split_text(text_path_orig, chunk_size) or []
 
-    # system prompt for indexing
     system_lines = [
         prefix.get("task_intro", "") or "You are an expert software engineer.",
         "First, build a compact structural understanding of the ORIGINAL codebase.",
@@ -177,13 +170,12 @@ def _summarize_original_repo(
         if max_chunks is not None and attempts >= max_chunks:
             break
 
-        # build a concise user prompt for this ORIGINAL chunk
         user_lines = [
             f"FILE: {file_path}",
             f"ORIGINAL CHUNK LINES: {s_line}-{e_line}",
             cov_hint, bug_hint,
             "=== ORIGINAL CHUNK ===",
-            _fit_chars(content, 3500),  # keep prompt bounded
+            _fit_chars(content, 3500),
             "Return JSON only."
         ]
         user_text = "\n".join([u for u in user_lines if u])
@@ -196,9 +188,12 @@ def _summarize_original_repo(
             model=model,
             system_text=system_text,
             user_text=user_text,
-            temperature=0.2,
+            temperature=0.0,   # safer for schema
             top_p=0.95,
             num_ctx=chunk_size,
+            timeout_s=240,
+            retries=5,
+            enforce_json=True, # request strict JSON
         )
         if logger:  # keep it small
             logger.dump_pair(
@@ -213,10 +208,10 @@ def _summarize_original_repo(
             continue
 
         parsed = extract_first_json(content_out) or {}
+        # STRICT indexing schema (no "findings" wrapping here)
         if not (isinstance(parsed, dict) and parsed.get("file")):
             continue
         if parsed.get("file") not in (None, "", file_path):
-            # be strict: ignore if the model changed 'file' unexpectedly
             continue
 
         hits += 1
@@ -227,7 +222,6 @@ def _summarize_original_repo(
             "risky_spans": [],  # [[s,e,"why"], ...] in *global* file lines
         })
 
-        # collect, deduplicate a bit
         for k in ("symbols", "intents", "invariants"):
             vals = parsed.get(k) or []
             if isinstance(vals, list):
@@ -235,27 +229,23 @@ def _summarize_original_repo(
                     if isinstance(v, str) and v and v not in rec[k]:
                         rec[k].append(v)
 
-        # risky spans may be chunk-local; map to file-global
         for se in (parsed.get("risky_spans") or []):
             if (isinstance(se, list) and len(se) >= 2 and
                     isinstance(se[0], (int, float)) and isinstance(se[1], (int, float))):
-                loc_s = int(se[0]);
-                loc_e = int(se[1])
+                loc_s = int(se[0]); loc_e = int(se[1])
                 reason = se[2] if len(se) >= 3 and isinstance(se[2], str) else ""
                 gs = s_line + (loc_s - 1)
                 ge = s_line + (loc_e - 1)
                 if gs <= ge:
                     rec["risky_spans"].append([gs, ge, reason])
 
-    # trim for token safety (keep top N per list)
+    # compact lists
     for f, rec in file_aggr.items():
         rec["symbols"] = rec["symbols"][:50]
         rec["intents"] = rec["intents"][:50]
         rec["invariants"] = rec["invariants"][:50]
-        # risky spans: merge overlaps ignoring reason, keep a small top set
         spans_only = [[s, e] for s, e, _ in rec["risky_spans"]]
         merged = _merge_spans(spans_only)
-        # reattach empty reasons
         rec["risky_spans"] = [[s, e, ""] for s, e in merged[:50]]
 
     stats = {
@@ -281,17 +271,17 @@ def _summarize_original_repo(
 # -------------------------
 
 def analyze_with_llm(
-        *,
-        model: str = "mistral",
-        text_path_orig: str,
-        text_path_mut: str,
-        coverage_path: str | None = None,
-        bug_reports: list | None = None,
-        chunk_size: int = 4000,
-        verbose: bool = False,
-        max_chunks: int | None = None,  # set small (e.g., 20) to quick-test
-        debug_dir: str | None = None,  # where to dump prompt/response samples
-        logger: Optional[RunLogger] = None,
+    *,
+    model: str = "mistral",
+    text_path_orig: str,
+    text_path_mut: str,
+    coverage_path: str | None = None,
+    bug_reports: list | None = None,
+    chunk_size: int = 4000,
+    verbose: bool = False,
+    max_chunks: int | None = None,  # set small (e.g., 20) to quick-test
+    debug_dir: str | None = None,   # where to dump prompt/response samples
+    logger: Optional[RunLogger] = None,
 ):
     """
     Phase 1: build ORIGINAL summaries (cached).
@@ -312,16 +302,14 @@ def analyze_with_llm(
         bug_reports=bug_reports,
         debug_dir=debug_dir,
         verbose=verbose,
-        max_chunks=None,  # index everything by default; set small if you want to quick-test
+        max_chunks=None,
         logger=logger,
     )
 
     # ---- Phase 2: detect on MUTATED ----
-    # Split both ORIGINAL and MUTATED to compute line mappings & overlaps
     orig_chunks = split_text(text_path_orig, chunk_size) or []
-    mut_chunks = split_text(text_path_mut, chunk_size) or []
+    mut_chunks  = split_text(text_path_mut,  chunk_size) or []
 
-    # Index by file
     def _index(chunks):
         idx = {}
         for x in chunks:
@@ -332,7 +320,7 @@ def analyze_with_llm(
         return idx
 
     idx_orig = _index(orig_chunks)
-    idx_mut = _index(mut_chunks)
+    idx_mut  = _index(mut_chunks)
 
     files_count = len(idx_mut)
     chunks_mutated = sum(len(v) for v in idx_mut.values())
@@ -344,20 +332,19 @@ def analyze_with_llm(
     if debug_dir:
         Path(debug_dir).mkdir(parents=True, exist_ok=True)
 
-    # detection prompt skeleton
     prefix = _load_yaml(PROMPT_PREFIX_TEXT)
     system_lines = [
         prefix.get("task_intro", "") or "You are an expert software engineer and bug localization analyst.",
         prefix.get("goal", ""),
         prefix.get("structure_description", ""),
         (prefix.get("instructions", "") or "") + "\n\n"
-                                                 "You will receive ORIGINAL summary for a file and a MUTATED chunk.\n"
-                                                 "Detect only mutated regions within the provided MUTATED chunk lines.\n"
-                                                 "Return ONLY JSON with this exact shape:\n"
-                                                 '{"findings":[{"file":"<path>","line_spans":[[start,end],...],"confidence":0.0}]}\n'
-                                                 'Where line_spans is an array of pairs [start,end] (integers, 1-based, inclusive).\n'
-                                                 'Do NOT return dicts or nested arrays inside line_spans. If nothing found, return:\n'
-                                                 '{"findings":[{"file":"<path>","line_spans":[], "confidence":0.0}]}.\n',
+        "You will receive ORIGINAL summary for a file and a MUTATED chunk.\n"
+        "Detect only mutated regions within the provided MUTATED chunk lines.\n"
+        "Return ONLY JSON with this exact shape:\n"
+        '{"findings":[{"file":"<path>","line_spans":[[start,end],...],"confidence":0.0}]}\n'
+        "Where line_spans is an array of pairs [start,end] (integers, 1-based, inclusive).\n"
+        "Do NOT return dicts or nested arrays inside line_spans. If nothing found, return:\n"
+        '{"findings":[{"file":"<path>","line_spans":[], "confidence":0.0}]}.\n',
         prefix.get("output_format", ""),
     ]
     system_text = "\n".join([s for s in system_lines if s]).strip()
@@ -373,7 +360,6 @@ def analyze_with_llm(
     for file_path, sections in idx_mut.items():
         orig_list = idx_orig.get(file_path, [])
 
-        # compact per-file summary text
         sm = orig_summary_map.get(file_path, {})
         sm_text = json.dumps({
             "symbols": sm.get("symbols", [])[:20],
@@ -396,8 +382,7 @@ def analyze_with_llm(
             # find a small ORIGINAL overlap for local context
             orig_overlap = ""
             for oc in orig_list:
-                o_s = oc.get("start_line");
-                o_e = oc.get("end_line")
+                o_s = oc.get("start_line"); o_e = oc.get("end_line")
                 if o_s and o_e and not (o_e < m_s or m_e < o_s):
                     orig_overlap = oc.get("content", "")
                     break
@@ -425,9 +410,12 @@ def analyze_with_llm(
                 model=model,
                 system_text=system_text,
                 user_text=user_text,
-                temperature=0.2,
+                temperature=0.0,   # reduce drift
                 top_p=0.95,
                 num_ctx=chunk_size,
+                timeout_s=240,
+                retries=5,
+                enforce_json=True, # request strict JSON
             )
 
             if logger:
@@ -443,6 +431,19 @@ def analyze_with_llm(
                 continue
 
             parsed = extract_first_json(content_out) or {}
+            # tolerant wrappers: accept list-of-spans or top-level spans
+            if isinstance(parsed, list):
+                parsed = {"findings": [{"file": file_path,
+                                        "line_spans": parsed,
+                                        "confidence": 0.0}]}
+            elif isinstance(parsed, dict) and "findings" not in parsed:
+                ls = (parsed.get("line_spans") or parsed.get("spans") or
+                      parsed.get("ranges") or parsed.get("lines") or [])
+                if ls:
+                    parsed = {"findings": [{"file": file_path,
+                                            "line_spans": ls,
+                                            "confidence": float(parsed.get("confidence", 0.0))}]}
+
             if not (isinstance(parsed, dict) and "findings" in parsed):
                 if verbose:
                     print(f"[TEXT] no JSON findings on attempt {attempts}")
@@ -517,7 +518,7 @@ def analyze_with_llm(
 
     dt = time.perf_counter() - t0
     stats = {
-        # indexing phase stats (so you can see time spent)
+        # indexing phase stats
         "index_files": idx_stats.get("files", 0),
         "index_attempts": idx_stats.get("attempts", 0),
         "index_hits": idx_stats.get("hits", 0),

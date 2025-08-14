@@ -18,22 +18,23 @@ def chat_or_generate(
     user_text: str,
     temperature: float = 0.2,
     top_p: float = 0.95,
-    timeout_s: int = 120,
-    retries: int = 3,
+    timeout_s: int = 240,          # was 120
+    retries: int = 5,              # was 3
     num_ctx: int | None = None,
+    enforce_json: bool = False,    # <— NEW
     logger: Optional[RunLogger] = None,
     log_tag: str = "llm"
 ):
     """
-    Try /api/chat first. If the server/model doesn't support chat, fall back to /api/generate.
+    Try /api/chat first; if unsupported, fall back to /api/generate.
+    If enforce_json=True, we pass options.format="json" and auto-fallback if the model rejects it.
     Returns: (content_text|None, error|None)
     """
-
-    def _opts():
+    def _opts(json_mode: bool):
         o = {"temperature": temperature, "top_p": top_p}
         if num_ctx: o["num_ctx"] = num_ctx
+        if json_mode: o["format"] = "json"   # Ollama JSON mode (not all models support)
         return o
-
 
     # 1) chat
     chat_url = f"{OLLAMA_BASE}/api/chat"
@@ -44,12 +45,16 @@ def chat_or_generate(
             {"role": "user", "content": user_text},
         ],
         "stream": False,
-        "options": _opts(),
+        "options": _opts(enforce_json),
     }
     if logger:
         logger.write_json(f"{log_tag}_chat_request", {"url": chat_url, "payload_head": str(chat_payload)[:1000]})
 
     code, resp, err = post_ollama(chat_url, chat_payload, timeout_s=timeout_s, retries=retries)
+    if (not resp or not isinstance(resp, dict)) and enforce_json:
+        # retry once without JSON mode
+        chat_payload["options"] = _opts(False)
+        code, resp, err = post_ollama(chat_url, chat_payload, timeout_s=timeout_s, retries=retries)
     if logger:
         logger.write_json(f"{log_tag}_chat_response", {"status": code, "error": err, "resp_keys": list(resp.keys()) if isinstance(resp, dict) else None})
 
@@ -70,6 +75,9 @@ def chat_or_generate(
         logger.write_json(f"{log_tag}_generate_request", {"url": gen_url, "payload_head": str(gen_payload)[:1000]})
 
     code, resp, err2 = post_ollama(gen_url, gen_payload, timeout_s=timeout_s, retries=retries)
+    if (not resp or not isinstance(resp, dict)) and enforce_json:
+        gen_payload["options"] = _opts(False)
+        code, resp, err2 = post_ollama(gen_url, gen_payload, timeout_s=timeout_s, retries=retries)
     if logger:
         logger.write_json(f"{log_tag}_generate_response", {"status": code, "error": err2, "resp_keys": list(resp.keys()) if isinstance(resp, dict) else None})
 
