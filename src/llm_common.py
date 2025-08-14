@@ -1,4 +1,3 @@
-# src/llm_common.py
 import os
 import json
 import time
@@ -11,6 +10,7 @@ from .runlog import RunLogger
 # Base host only (no /api). Can override with env var if needed.
 OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://localhost:11434")
 
+
 def chat_or_generate(
     *,
     model: str,
@@ -21,7 +21,7 @@ def chat_or_generate(
     timeout_s: int = 240,          # was 120
     retries: int = 5,              # was 3
     num_ctx: int | None = None,
-    enforce_json: bool = False,    # <— NEW
+    enforce_json: bool = False,    # request JSON mode if supported
     logger: Optional[RunLogger] = None,
     log_tag: str = "llm"
 ):
@@ -32,8 +32,10 @@ def chat_or_generate(
     """
     def _opts(json_mode: bool = False):
         o = {"temperature": temperature, "top_p": top_p}
-        if num_ctx: o["num_ctx"] = num_ctx
-        if json_mode: o["format"] = "json"   # Ollama JSON mode (not all models support)
+        if num_ctx:
+            o["num_ctx"] = num_ctx
+        if json_mode:
+            o["format"] = "json"   # Ollama JSON mode (not all models support)
         return o
 
     # 1) chat
@@ -56,20 +58,23 @@ def chat_or_generate(
         chat_payload["options"] = _opts(False)
         code, resp, err = post_ollama(chat_url, chat_payload, timeout_s=timeout_s, retries=retries)
     if logger:
-        logger.write_json(f"{log_tag}_chat_response", {"status": code, "error": err, "resp_keys": list(resp.keys()) if isinstance(resp, dict) else None})
+        logger.write_json(
+            f"{log_tag}_chat_response",
+            {"status": code, "error": err, "resp_keys": list(resp.keys()) if isinstance(resp, dict) else None}
+        )
 
     if resp and isinstance(resp, dict):
         content = (resp.get("message") or {}).get("content")
         if content:
             return content, None
 
-    # 2) generate fallback
+    # 2) generate fallback — IMPORTANT: honor enforce_json here too
     gen_url = f"{OLLAMA_BASE}/api/generate"
     gen_payload = {
         "model": model,
         "prompt": f"{system_text}\n\n{user_text}",
         "stream": False,
-        "options": _opts(),
+        "options": _opts(enforce_json),
     }
     if logger:
         logger.write_json(f"{log_tag}_generate_request", {"url": gen_url, "payload_head": str(gen_payload)[:1000]})
@@ -79,7 +84,10 @@ def chat_or_generate(
         gen_payload["options"] = _opts(False)
         code, resp, err2 = post_ollama(gen_url, gen_payload, timeout_s=timeout_s, retries=retries)
     if logger:
-        logger.write_json(f"{log_tag}_generate_response", {"status": code, "error": err2, "resp_keys": list(resp.keys()) if isinstance(resp, dict) else None})
+        logger.write_json(
+            f"{log_tag}_generate_response",
+            {"status": code, "error": err2, "resp_keys": list(resp.keys()) if isinstance(resp, dict) else None}
+        )
 
     if resp and isinstance(resp, dict):
         content = resp.get("response")
@@ -111,6 +119,10 @@ def post_ollama(url, payload, timeout_s=120, retries=3, backoff=0.8):
     return None, None, err
 
 
+# -----------------------
+# JSON extraction helpers
+# -----------------------
+
 def _find_balanced_block(s: str, start_char: str, end_char: str, start_pos: int) -> int:
     n = len(s)
     stack = 0
@@ -141,22 +153,52 @@ def _find_balanced_block(s: str, start_char: str, end_char: str, start_pos: int)
     return -1
 
 
+def _coerce_json_like(s: str) -> str:
+    # strip code fences
+    s = re.sub(r"^```(?:json)?\s*|```$", "", s.strip(), flags=re.I | re.M)
+    # remove // and # comments
+    s = re.sub(r"(?m)//.*?$", "", s)
+    s = re.sub(r"(?m)^\s*#.*?$", "", s)
+    # remove /* ... */ comments
+    s = re.sub(r"/\*.*?\*/", "", s, flags=re.S)
+    # replace smart quotes
+    s = s.replace("“", "\"").replace("”", "\"").replace("‘", "'").replace("’", "'")
+    # keys in single quotes -> double
+    s = re.sub(r"(?m)'([A-Za-z0-9_]+)'\s*:", r'"\1":', s)
+    # Python booleans/null -> JSON
+    s = re.sub(r"\bTrue\b", "true", s)
+    s = re.sub(r"\bFalse\b", "false", s)
+    s = re.sub(r"\bNone\b", "null", s)
+    # kill trailing commas before } or ]
+    s = re.sub(r",(\s*[}\]])", r"\1", s)
+    # "1-2" -> [1,2]
+    s = re.sub(r'"(\d+)\s*-\s*(\d+)"', r'[\1,\2]', s)
+    # remove bare ellipses
+    s = re.sub(r"\.\.\.", "", s)
+    return s
+
+
 def _try_load_json(fragment: str):
     try:
         return json.loads(fragment)
     except Exception:
-        return None
+        try:
+            return json.loads(_coerce_json_like(fragment))
+        except Exception:
+            return None
 
 
 def extract_first_json(text: str):
     if not text:
         return None
+    # fenced block first
     m = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.S | re.I)
     if m:
         candidate = m.group(1).strip()
         obj = _try_load_json(candidate)
         if obj is not None:
             return obj
+    # object
     start = text.find("{")
     while start != -1:
         end = _find_balanced_block(text, "{", "}", start)
@@ -166,6 +208,7 @@ def extract_first_json(text: str):
             if obj is not None:
                 return obj
         start = text.find("{", start + 1)
+    # array
     start = text.find("[")
     while start != -1:
         end = _find_balanced_block(text, "[", "]", start)

@@ -1,4 +1,3 @@
-# src/llm_graph_input.py
 import os
 import json
 import yaml
@@ -21,6 +20,7 @@ def _load_yaml(path: str) -> dict:
     except Exception:
         return {}
 
+
 def _load_json(path: Optional[str]) -> dict:
     try:
         if path and os.path.exists(path):
@@ -30,12 +30,15 @@ def _load_json(path: Optional[str]) -> dict:
         pass
     return {}
 
+
 def _sanitize_name(s: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in s)[:120]
+
 
 def _fit(text: Optional[str], max_chars: int) -> str:
     # No truncation here; upstream chunking already bounds size.
     return text or ""
+
 
 def _merge_spans(spans: List[List[int]]) -> List[List[int]]:
     if not spans:
@@ -49,9 +52,10 @@ def _merge_spans(spans: List[List[int]]) -> List[List[int]]:
             out[-1][1] = max(out[-1][1], e)
     return out
 
+
 def _normalize_line_spans(raw: Any) -> List[List[int]]:
     """
-    Accepts [[s,e], ...], [{'start':s,'end':e}], or nested lists.
+    Accepts [[s,e], ...], [{'start':s,'end':e}], nested lists, etc.
     Returns clean [[s,e], ...] with ints.
     """
     def _add(out, a, b):
@@ -64,7 +68,7 @@ def _normalize_line_spans(raw: Any) -> List[List[int]]:
 
     spans: List[List[int]] = []
     if isinstance(raw, dict):
-        raw = raw.get("line_spans") or raw.get("spans") or raw.get("ranges") or raw.get("lines") or []
+        raw = raw.get("line_spans") or raw.get("lineSpans") or raw.get("spans") or raw.get("ranges") or raw.get("lines") or []
 
     if not isinstance(raw, (list, tuple)):
         return spans
@@ -87,6 +91,75 @@ def _normalize_line_spans(raw: Any) -> List[List[int]]:
             if s is not None and e is not None:
                 _add(spans, s, e)
     return spans
+
+
+def _as_float(value, default=0.0) -> float:
+    if value is None:
+        return float(default)
+    try:
+        if isinstance(value, (list, tuple)):
+            # pick max numeric if list is given
+            nums = []
+            for v in value:
+                try:
+                    nums.append(float(v))
+                except Exception:
+                    pass
+            return float(max(nums)) if nums else float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _coerce_to_findings(parsed: Any, default_file: str) -> Dict[str, Any]:
+    """
+    Normalize many shapes into:
+      {"findings":[{"file": "<path>", "line_spans": [[s,e],...], "confidence": 0.0}]}
+    Accepts:
+      - list => treat as spans for default_file
+      - dict without findings but with file+spans
+      - dict with findings list (each possibly mixed keyed)
+      - supports lineSpans / spans / ranges / lines
+      - confidence may be None / list / str / float
+    """
+    fixed: List[Dict[str, Any]] = []
+
+    def _pack(spans_raw, fpath, conf_raw):
+        spans = _normalize_line_spans(spans_raw)
+        conf = _as_float(conf_raw, 0.0)
+        if conf < 0.0: conf = 0.0
+        if conf > 1.0: conf = 1.0
+        fixed.append({"file": fpath or default_file, "line_spans": spans, "confidence": conf})
+
+    if isinstance(parsed, list):
+        _pack(parsed, default_file, 0.0)
+    elif isinstance(parsed, dict):
+        if "findings" in parsed and isinstance(parsed["findings"], list):
+            for f in parsed["findings"]:
+                if isinstance(f, dict):
+                    fpath = f.get("file") or f.get("path") or default_file
+                    spans_raw = (
+                        f.get("line_spans") or f.get("lineSpans") or
+                        f.get("spans") or f.get("ranges") or f.get("lines") or
+                        f.get("mutations") or f.get("risky_spans") or []
+                    )
+                    _pack(spans_raw, fpath, f.get("confidence"))
+                else:
+                    # finding item itself is a span-like list
+                    _pack(f, default_file, 0.0)
+        else:
+            # single object with spans
+            fpath = parsed.get("file") or parsed.get("path") or default_file
+            spans_raw = (
+                parsed.get("line_spans") or parsed.get("lineSpans") or
+                parsed.get("spans") or parsed.get("ranges") or parsed.get("lines") or
+                parsed.get("mutations") or parsed.get("risky_spans") or []
+            )
+            _pack(spans_raw, fpath, parsed.get("confidence"))
+
+    if not fixed:
+        fixed = [{"file": default_file, "line_spans": [], "confidence": 0.0}]
+    return {"findings": fixed}
 
 
 # ---------- Phase 1: Index ORIGINAL graph ----------
@@ -199,6 +272,7 @@ def _summarize_original_graph(
             continue
 
         parsed = extract_first_json(out) or {}
+        # indexing is kept strict:
         if not (isinstance(parsed, dict) and parsed.get("file")):
             continue
         if parsed.get("file") not in (None, "", file_path):
@@ -278,7 +352,7 @@ def analyze_with_llm(
     coverage = _load_json(coverage_path) if coverage_path else {}
     bug_reports = bug_reports or []
 
-    # Phase 1
+    # Phase 1 (cached)
     orig_summary_map, idx_stats, cache_path = _summarize_original_graph(
         model=model,
         graph_path_orig=graph_path_orig,
@@ -354,7 +428,6 @@ def analyze_with_llm(
         }, ensure_ascii=False)
         sm_text = _fit(sm_text, 1800)
 
-        # optional tiny raw-orig text
         orig_compact = orig_list[0].get("content", "") if orig_list else ""
 
         for mut_sec in sections:
@@ -367,7 +440,6 @@ def analyze_with_llm(
                 skipped_no_lines += 1
                 continue
 
-            # find an ORIGINAL chunk that overlaps
             raw_overlap = ""
             for oc in orig_list:
                 o_s = oc.get("start_line"); o_e = oc.get("end_line")
@@ -415,20 +487,30 @@ def analyze_with_llm(
                 continue
 
             parsed = extract_first_json(out) or {}
-            # tolerant wrappers: accept list-of-spans or top-level spans
-            if isinstance(parsed, list):
-                parsed = {"findings": [{"file": file_path,
-                                        "line_spans": parsed,
-                                        "confidence": 0.0}]}
-            elif isinstance(parsed, dict) and "findings" not in parsed:
-                ls = (parsed.get("line_spans") or parsed.get("spans") or
-                      parsed.get("ranges") or parsed.get("lines") or [])
-                if ls:
-                    parsed = {"findings": [{"file": file_path,
-                                            "line_spans": ls,
-                                            "confidence": float(parsed.get("confidence", 0.0))}]}
+            # If parse failed or shape is wrong, do a tiny JSON-only retry
+            if not isinstance(parsed, (list, dict)):
+                skeleton = (
+                    f'Only JSON. No prose.\n'
+                    f'Return exactly one of:\n'
+                    f'{{"findings":[{{"file":"{file_path}","line_spans":[[1,1]],"confidence":0.0}}]}} '
+                    f'OR {{"findings":[{{"file":"{file_path}","line_spans":[],"confidence":0.0}}]}}'
+                )
+                out2, _err2 = chat_or_generate(
+                    model=model,
+                    system_text=system_text,
+                    user_text=skeleton,
+                    temperature=0.0,
+                    top_p=0.3,
+                    num_ctx=1024,
+                    timeout_s=60,
+                    retries=2,
+                    enforce_json=True,
+                )
+                parsed = extract_first_json(out2 or "") or {}
 
-            if not (isinstance(parsed, dict) and "findings" in parsed):
+            # Coerce many shapes into canonical findings
+            coerced = _coerce_to_findings(parsed, file_path)
+            if not (isinstance(coerced, dict) and "findings" in coerced):
                 if verbose:
                     print(f"[GRAPH] no JSON findings on attempt {attempts}")
                 if debug_dir and saved_samples < 5:
@@ -438,8 +520,8 @@ def analyze_with_llm(
                         "mutated_lines": [m_s, m_e],
                         "system_text_head": system_text[:400],
                         "user_text_head": user_text[:800],
-                        "model_reply_head": out[:1200],
-                        "parsed": None,
+                        "model_reply_head": (out or "")[:1200],
+                        "parsed": parsed,
                     }
                     with open(Path(debug_dir) / f"g_sample_nojson_{saved_samples + 1}.json", "w", encoding="utf-8") as f:
                         json.dump(sample, f, indent=2)
@@ -447,7 +529,7 @@ def analyze_with_llm(
                 continue
 
             spans: List[List[int]] = []
-            for ffind in parsed.get("findings", []):
+            for ffind in coerced.get("findings", []):
                 fpath = ffind.get("file") or file_path
                 if fpath != file_path:
                     continue
@@ -467,7 +549,7 @@ def analyze_with_llm(
                         "phase": "detect",
                         "file": file_path,
                         "mutated_lines": [m_s, m_e],
-                        "model_reply_head": out[:1200],
+                        "model_reply_head": (out or "")[:1200],
                         "parsed": {"file": file_path, "line_spans": spans[:5]},
                     }
                     with open(Path(debug_dir) / f"g_sample_hit_{saved_samples + 1}.json", "w", encoding="utf-8") as f:
