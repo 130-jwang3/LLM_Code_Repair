@@ -67,31 +67,73 @@ def _normpath(p: str | None) -> str | None:
         return None
     return os.path.normpath(p).replace("\\", "/").lower()
 
+# Ignore tests by default; set to () if you want to include them
+IGNORE_DIR_PREFIXES = ("tests/", "test/")
+
+def _is_ignored_path(rel: str) -> bool:
+    """Return True if we should ignore this file in scoring (e.g., tests)."""
+    if not rel:
+        return True
+    # anywhere in the path
+    for pref in IGNORE_DIR_PREFIXES:
+        if f"/{pref}" in rel or rel.startswith(pref):
+            return True
+    return False
+
+def _to_rel(p: str | None, mutants_dir: str) -> str | None:
+    """
+    Best-effort conversion to a path relative to mutants_dir.
+    Works for absolute predictions or already relative ones.
+    Falls back to last two segments if we can't make it relative.
+    """
+    p = _normpath(p)
+    if not p:
+        return None
+
+    md = _normpath(mutants_dir)
+    if md:
+        md = md.rstrip("/")
+        if p.startswith(md + "/"):
+            return p[len(md) + 1:]
+        # If the string contains the mutants dir anywhere, trim up to it
+        idx = p.find(md + "/")
+        if idx != -1:
+            return p[idx + len(md) + 1:]
+
+        # Common case: name like ".../pygithub_mutants/..."
+        # Try to trim after "*_mutants/"
+        if "_mutants/" in p:
+            return p.split("_mutants/", 1)[1]
+
+    # If it's already relative (no root/drive), keep it
+    if not (p.startswith("/") or (":" in p.split("/")[0])):  # windows drive
+        return p
+
+    # Fallback: last two segments
+    parts = p.split("/")
+    if len(parts) >= 2:
+        return "/".join(parts[-2:])
+    return parts[-1]
+
 def _pick_file_key(rec: dict, mutants_dir: str) -> str | None:
-    """Prefer rel_path; fallback to file/path/relpath/filename; else derive from dst_path."""
+    """Prefer rel_path; else try dst_path relative to mutants_dir; else fallbacks."""
     for k in ("rel_path", "file", "path", "relpath", "filename"):
         if rec.get(k):
-            return _normpath(rec[k])
+            return _to_rel(rec[k], mutants_dir)
     dst = rec.get("dst_path") or rec.get("dest_path")
     if dst:
-        try:
-            rel = os.path.relpath(dst, mutants_dir)
-        except Exception:
-            rel = dst
-        return _normpath(rel)
+        return _to_rel(dst, mutants_dir)
     src = rec.get("src_path")
     if src:
-        return _normpath(src)
+        return _to_rel(src, mutants_dir)
     return None
 
 # ---------- load GT from mutated_files.json ----------
 
 def _load_mutations(mutants_dir: str) -> Dict[str, List[List[int]]]:
     """
-    Return GT map: { file_rel_path: [[s,e], ...] }.
-    Supports your mutator format:
-      - top-level list of records
-      - records with action == "mutated" carry `mutations` entries with lineno/end_lineno (etc.)
+    Return GT map: { relative_file_path: [[s,e], ...] }.
+    Only uses records with action == "mutated" (when present).
     """
     path = os.path.join(mutants_dir, "mutated_files.json")
     if not os.path.exists(path):
@@ -108,7 +150,9 @@ def _load_mutations(mutants_dir: str) -> Dict[str, List[List[int]]]:
                 records = data[key]; break
         else:
             if all(isinstance(v, list) for v in data.values()):
-                return { _normpath(k) or k : _merge_spans(_normalize_line_spans(v)) for k, v in data.items() }
+                # direct {file: spans-like}
+                return { _to_rel(k, mutants_dir) or k : _merge_spans(_normalize_line_spans(v))
+                         for k, v in data.items() }
             records = []
     else:
         records = []
@@ -119,13 +163,16 @@ def _load_mutations(mutants_dir: str) -> Dict[str, List[List[int]]]:
             continue
         if "action" in rec and rec.get("action") != "mutated":
             continue
-        f = _pick_file_key(rec, mutants_dir)
-        if not f:
+
+        f_rel = _pick_file_key(rec, mutants_dir)
+        if not f_rel or _is_ignored_path(f_rel):
             continue
 
         spans: List[List[int]] = []
+        # any direct spans on the record
         spans += _normalize_line_spans(rec.get("line_spans") or rec.get("spans") or
                                        rec.get("ranges") or rec.get("lines") or [])
+        # mutation/edit style entries
         for ed in (rec.get("mutations") or rec.get("edits") or []):
             if not isinstance(ed, dict):
                 continue
@@ -138,7 +185,7 @@ def _load_mutations(mutants_dir: str) -> Dict[str, List[List[int]]]:
                     pass
 
         if spans:
-            gt[f].extend(spans)
+            gt[f_rel].extend(spans)
 
     for k in list(gt.keys()):
         gt[k] = _merge_spans(gt[k])
@@ -150,20 +197,21 @@ def evaluate_detection(
     detection_json: Any,
     mutants_dir: str,
     iou_thresh: float = 0.2,
-    file_level: bool = True,  # <-- default to file-level scoring as requested
+    file_level: bool = True,  # default: file-level scoring
 ):
     """
     If file_level=True:
-      - TP: predicted any span for a file that is actually mutated (file name match)
+      - TP: predicted any span for a file that is actually mutated (file relative path match)
       - FP: predicted file not in GT mutated files
       - FN: mutated file with no predictions
+      (Test files are ignored on both sides.)
+
     If file_level=False:
-      - Span-level IoU scoring (original behavior) with iou_thresh.
+      - Span-level IoU scoring (original behavior) with iou_thresh (test files ignored).
     """
     gt = _load_mutations(mutants_dir)
-    gt_files = set(gt.keys())
 
-    # Normalize predictions into {file: [spans...]} using normalized paths.
+    # Normalize predictions into {rel_file: [spans...]} using mutants_dir
     pred: Dict[str, List[List[int]]] = defaultdict(list)
     findings = []
     if isinstance(detection_json, dict):
@@ -174,15 +222,18 @@ def evaluate_detection(
     for item in findings:
         if not isinstance(item, dict):
             continue
-        f = _normpath(item.get("file") or item.get("path") or item.get("filename"))
+        f_rel = _to_rel(item.get("file") or item.get("path") or item.get("filename"), mutants_dir)
+        if not f_rel or _is_ignored_path(f_rel):
+            continue
         spans = _normalize_line_spans(item.get("line_spans") or item.get("spans") or
                                       item.get("ranges") or item.get("lines") or [])
-        if f and spans:
-            pred[f].extend(spans)
+        if spans:
+            pred[f_rel].extend(spans)
 
     if file_level:
-        # File-level: collapse to sets of files.
+        gt_files = set(gt.keys())
         pred_files = {f for f, spans in pred.items() if spans}
+
         tp_files = pred_files & gt_files
         fp_files = pred_files - gt_files
         fn_files = gt_files - pred_files
@@ -206,7 +257,7 @@ def evaluate_detection(
             "fn_files": sorted(fn_files),
         }
 
-    # -------- span-level (original) --------
+    # -------- span-level (IoU) --------
     tp = fp = fn = 0
     for fpath, gts in gt.items():
         used = [False] * len(gts)
