@@ -30,7 +30,7 @@ def chat_or_generate(
     If enforce_json=True, we pass options.format="json" and auto-fallback if the model rejects it.
     Returns: (content_text|None, error|None)
     """
-    def _opts(json_mode: bool):
+    def _opts(json_mode: bool = False):
         o = {"temperature": temperature, "top_p": top_p}
         if num_ctx: o["num_ctx"] = num_ctx
         if json_mode: o["format"] = "json"   # Ollama JSON mode (not all models support)
