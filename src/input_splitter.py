@@ -59,25 +59,20 @@ def split_text(input_path: str, chunk_size: int) -> List[Dict[str, Any]]:
                 print(f"[split_text] WARN: splitter returned non-list for {path}")
                 continue
 
-            scan_pos = 0  # move forward through the file as we match chunks
+            scan_pos = 0
             for j, sec in enumerate(chunks, start=1):
                 try:
-                    # prefer matching at/after last end to avoid earlier duplicate hits
                     start_off = content.find(sec, scan_pos)
                     if start_off == -1:
-                        # fallback: naive locate
                         start_off = content.find(sec)
                     end_off = start_off + len(sec) if start_off != -1 else None
 
                     if start_off is None or start_off == -1 or end_off is None:
-                        # fallback to whole-file span if mapping fails
                         start_line = 1
                         end_line = content.count("\n") + 1
                     else:
-                        # precise line calc by counting newlines before offsets
                         start_line = content.count("\n", 0, start_off) + 1
                         end_line = content.count("\n", 0, end_off) + 1
-                        # advance cursor for next search
                         scan_pos = end_off
                 except Exception as e:
                     print(f"[split_text] WARN: line map failed for {path} sec#{j}: {e}")
@@ -98,10 +93,8 @@ def split_text(input_path: str, chunk_size: int) -> List[Dict[str, Any]]:
     except json.JSONDecodeError:
         print("Error: Invalid JSON")
     except Exception as e:
-        # catch-all so we don't silently return just the file_tree
         print(f"[split_text] ERROR: {e}")
 
-    # telemetry
     file_chunks = sum(1 for x in separated_text if isinstance(x, dict) and "file" in x)
     print(f"[split_text] produced entries: total={len(separated_text)} file_chunks={file_chunks}")
 
@@ -152,19 +145,16 @@ def split_ast(graph_json_path: str, chunk_size: int) -> List[Dict[str, Any]]:
             g = json.load(f)
 
         all_nodes = g.get("nodes") or []
-        # group nodes by file (prefer 'module', else 'path')
         by_file: Dict[str, List[Dict[str, Any]]] = {}
         for n in all_nodes:
             file_key = n.get("module") or n.get("path")
             if not file_key:
-                # skip nodes not tied to a source file (e.g., purely external)
                 continue
             by_file.setdefault(file_key, []).append(n)
 
         enc = tiktoken.get_encoding("cl100k_base")
 
         for file_path, nodes in by_file.items():
-            # sort nodes by start_line for a stable order
             nodes.sort(key=lambda x: (x.get("start_line") or 10**12, x.get("end_line") or 10**12))
 
             current_nodes: List[Dict[str, Any]] = []
@@ -177,7 +167,6 @@ def split_ast(graph_json_path: str, chunk_size: int) -> List[Dict[str, Any]]:
                 if not current_nodes:
                     return
                 section += 1
-                # compute span from nodes that have line info
                 span_lines = [(n.get("start_line"), n.get("end_line"))
                               for n in current_nodes if isinstance(n.get("start_line"), int) and isinstance(n.get("end_line"), int)]
                 if span_lines:
@@ -201,7 +190,6 @@ def split_ast(graph_json_path: str, chunk_size: int) -> List[Dict[str, Any]]:
             for n in nodes:
                 piece = _node_text(n, code_max=400)
                 piece_tokens = _tok_len(enc, piece)
-                # if one node is huge, emit it alone
                 if current_tokens == 0 and piece_tokens >= chunk_size:
                     current_nodes = [n]
                     current_text_parts = [piece]

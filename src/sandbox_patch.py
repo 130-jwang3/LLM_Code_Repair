@@ -14,10 +14,6 @@ def apply_unified_diff_in_sandbox(
     *,
     use_git: bool = True
 ) -> Tuple[bool, Dict[str, Any]]:
-    """
-    Copy repo to a temp directory and apply the unified diff there.
-    Returns (ok, report). Source repo is never modified.
-    """
     sbx_repo = _copy_repo_to_tmp(src_repo)
     report: Dict[str, Any] = {
         "sandbox": sbx_repo, "method": "git-apply" if use_git else "in-memory",
@@ -25,7 +21,7 @@ def apply_unified_diff_in_sandbox(
     }
 
     if use_git:
-        # Init git if needed so apply has context
+        # init git if needed, so apply has context
         try:
             r = subprocess.run(["git", "-C", sbx_repo, "rev-parse"], capture_output=True, text=True)
             if r.returncode != 0:

@@ -39,7 +39,6 @@ def _guess_patch_spans_from_diff_text(diff_text: str) -> Dict[str, List[Tuple[in
                 cur = cur[2:]
             spans.setdefault(cur, [])
         elif line.startswith("@@"):
-            # @@ -old_start,old_count +new_start,new_count @@
             try:
                 hunk = line.split("@@")[1].strip()
                 parts = hunk.split()
@@ -112,7 +111,6 @@ def evaluate_patch_against_mutations(
             if any(_span_overlap(a, b) for a in mut_spans for b in diff_file_spans):
                 touched_mut_files += 1
 
-        # reversal heuristic
         lines = code.splitlines()
         for m in entry.get("mutations", []):
             change = m.get("change", "")

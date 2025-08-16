@@ -71,8 +71,8 @@ class CodeGraphBuilder:
         self.ast_trees = {}
 
         # stride helpers
-        self.parents: Dict[int, int] = {}        # child_id -> parent_id (via CONTAINS)
-        self.node_by_id: Dict[int, Dict[str, Any]] = {}  # id -> node
+        self.parents: Dict[int, int] = {}
+        self.node_by_id: Dict[int, Dict[str, Any]] = {}
 
     # -----------------
     # Graph helpers
@@ -90,9 +90,9 @@ class CodeGraphBuilder:
         node_data["summary"] = make_summary(code)
         node_data["sloc"] = sloc(code)
 
-        node_data.setdefault("module", None)     # repo-relative path of file
-        node_data.setdefault("path", None)       # same as module; kept for clarity
-        node_data.setdefault("path_abs", None)   # absolute path
+        node_data.setdefault("module", None)
+        node_data.setdefault("path", None)
+        node_data.setdefault("path_abs", None)
         node_data.setdefault("start_line", None)
         node_data.setdefault("end_line", None)
         node_data.setdefault("parent_id", None)
@@ -106,7 +106,6 @@ class CodeGraphBuilder:
             "source": src,
             "target": dst,
             "type": edge_type,
-            # stable references for striding
             "source_sid": self.node_by_id.get(src, {}).get("sid"),
             "target_sid": self.node_by_id.get(dst, {}).get("sid"),
         }
@@ -138,7 +137,7 @@ class CodeGraphBuilder:
             name=module_name,
             path=rel_path,
             path_abs=os.path.abspath(file_path),
-            qualified_name=module_name,               # treat module as top-level qname
+            qualified_name=module_name,
             code=source_code.decode("utf-8", errors="ignore"),
             start_line=1,
             end_line=total_lines,
@@ -151,9 +150,8 @@ class CodeGraphBuilder:
 
     def _propagate_module(self, module_id: int) -> None:
         """Fill `module` (repo-relative path) for the subtree and ensure breadcrumbs exist."""
-        mod_path = self.node_by_id[module_id].get("path")  # repo-relative or abs
+        mod_path = self.node_by_id[module_id].get("path")
         stack = [module_id]
-        # Build quick child index of CONTAINS edges for speed
         children = defaultdict(list)
         for e in self.graph["edges"]:
             if e["type"] == "CONTAINS":
@@ -167,7 +165,6 @@ class CodeGraphBuilder:
                 # make sure parent_id exists
                 if self.node_by_id[ch].get("parent_id") is None:
                     self.node_by_id[ch]["parent_id"] = cur
-                # also propagate path/module if missing
                 self.node_by_id[ch].setdefault("module", mod_path)
                 self.node_by_id[ch].setdefault("path", mod_path)
                 stack.append(ch)

@@ -32,7 +32,6 @@ def analyze_test_coverage(source_dir, output_dir, repo_path):
         try:
             # Run tests only if a tests/ dir exists; be quiet and tolerant
             if os.path.isdir(os.path.join(abs_repo_path, "tests")):
-                # You can tweak '-k' to skip slow/integration if needed
                 pytest_rc = pytest.main(["-q", "--maxfail=1", "--disable-warnings", "tests/"])
             else:
                 print("[info] No tests/ directory found; collecting zero coverage.")

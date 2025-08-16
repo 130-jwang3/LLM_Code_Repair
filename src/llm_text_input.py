@@ -12,9 +12,6 @@ from .input_splitter import split_text
 
 
 def _normalize_line_spans(raw):
-    """
-    Returns a clean list of [start, end] (ints, 1-based, inclusive) from many shapes.
-    """
     def _add(out, a, b):
         try:
             ia, ib = int(a), int(b)
@@ -87,7 +84,7 @@ def _sanitize_name(s: str) -> str:
 
 
 def _fit_chars(text: str, max_chars: int) -> str:
-    # No truncation; upstream chunker handles size.
+    # No truncation
     return text or ""
 
 
@@ -110,7 +107,7 @@ def _as_float(value, default=0.0) -> float:
 
 def _coerce_to_findings(parsed, default_file: str):
     """
-    Normalize many shapes into:
+    Normalize shapes into:
       {"findings":[{"file": "<path>", "line_spans": [[s,e],...], "confidence": 0.0}]}
     """
     fixed = []
@@ -453,7 +450,7 @@ def analyze_with_llm(
                 model=model,
                 system_text=system_text,
                 user_text=user_text,
-                temperature=0.0,   # reduce drift
+                temperature=0.0,
                 top_p=0.95,
                 num_ctx=chunk_size,
                 timeout_s=240,

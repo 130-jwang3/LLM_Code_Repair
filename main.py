@@ -93,7 +93,7 @@ def main(mode, model="mistral"):
     chunk_size = 8000  # default
     m = model.lower()
     if "mistral" in m:
-        chunk_size = 16000  # Ollama mistral shows 32k ctx; be conservative
+        chunk_size = 16000
     elif "deepseek-coder" in m:
         chunk_size = 12000
     elif "gemma2" in m:
@@ -178,7 +178,6 @@ def main(mode, model="mistral"):
         else:
             print(f"[WARN] SKIP_LLM=1 set but no prior summary at {sum_path}; running LLM anyway.")
             SKIP_LLM_local = False
-        # fallthrough; if not found, we’ll run LLM below
 
     if llm_result is None:
         if mode == "text":
@@ -192,7 +191,7 @@ def main(mode, model="mistral"):
                 chunk_size=chunk_size,
                 verbose=True,
                 max_chunks=None,
-                debug_dir=dbg_text,   # <— stable if RUN_TAG set, enables index cache reuse
+                debug_dir=dbg_text,
                 logger=RUN_LOG,
             )
             stats = (llm_result or {}).get("stats", {})
@@ -213,7 +212,7 @@ def main(mode, model="mistral"):
                 chunk_size=chunk_size,
                 verbose=True,
                 max_chunks=None,
-                debug_dir=dbg_graph,  # <— stable if RUN_TAG set, enables index cache reuse
+                debug_dir=dbg_graph,
                 logger=RUN_LOG,
             )
             stats = (llm_result or {}).get("stats", {})
@@ -250,7 +249,6 @@ def main(mode, model="mistral"):
         else:
             print("Sandbox patch failed; see patch_application for details.")
 
-    # Placeholders (optional legacy)
     print("\n=== [6] LEGACY PLACEHOLDER METRICS ===")
     predictions = ["patch1"] if static_metrics else []
     labels = ["patch1"] if static_metrics else []

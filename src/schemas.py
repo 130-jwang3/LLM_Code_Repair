@@ -5,8 +5,8 @@ DETECTION_KEYS = {"findings"}  # list[Finding]
 Localization = Dict[str, Any]
 Repair = Dict[str, Any]
 
-LOCALIZATION_KEYS = {"file", "line_spans"}  # optional: "confidence"
-REPAIR_KEYS = {"diff"}  # optional: "notes"
+LOCALIZATION_KEYS = {"file", "line_spans"}
+REPAIR_KEYS = {"diff"}
 
 def is_localization(obj: dict) -> Tuple[bool, str]:
     if not isinstance(obj, dict):

@@ -57,14 +57,9 @@ def is_docstring(node: Node, source_code: bytes) -> bool:
     parent = getattr(node, "parent", None)
     if not parent:
         return False
-    # tree-sitter-python typically wraps bodies in a 'block' node
-    # We check: the string is the first statement in that parent or block
-    # and literal begins with triple quotes
     text = get_code(node, source_code).strip()
     if not (text.startswith(("'''", '"""'))):
         return False
-    # heuristic: ensure it's the first child in a block/expression
-    # Sometimes it's nested under expression_statement -> string
     if parent and len(parent.children) > 0 and parent.children[0] is node:
         return True
     if parent and parent.type == "expression_statement" and parent.parent and parent.parent.children:
@@ -114,7 +109,6 @@ def get_docstring_text(node: Node, source_code: bytes) -> Optional[str]:
                 break
         if block and block.children:
             first = block.children[0]
-            # Often: expression_statement -> string
             if first.type == "expression_statement" and first.children:
                 s = first.children[0]
                 if s.type == "string":
@@ -144,9 +138,7 @@ def extract_called_name(call_node: Node, source_code: bytes) -> Optional[str]:
             # identifiers
             if n.type == "identifier":
                 parts.append(get_code(n, source_code))
-            # attribute chains look like: attribute(object: x, attribute: y)
             if n.type == "attribute":
-                # attribute node usually has two children: object and attribute
                 attr = n.child_by_field_name("attribute")
                 obj = n.child_by_field_name("object")
                 if obj:
@@ -154,19 +146,15 @@ def extract_called_name(call_node: Node, source_code: bytes) -> Optional[str]:
                 if attr and attr.type == "identifier":
                     parts.append(get_code(attr, source_code))
                 return
-            # dotted names sometimes are represented as dotted_name
             if n.type == "dotted_name":
-                # children are identifiers and dots
                 parts.append(get_code(n, source_code))
                 return
-            # fallback: walk children
             for ch in n.children:
                 walk(ch)
 
         walk(f)
         if not parts:
             return None
-        # If we captured the entire dotted_name as one token, respect that
         if len(parts) == 1 and "." in parts[0]:
             return parts[0]
         return ".".join(parts)

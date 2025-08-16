@@ -36,7 +36,7 @@ def _sanitize_name(s: str) -> str:
 
 
 def _fit(text: Optional[str], max_chars: int) -> str:
-    # No truncation here; upstream chunking already bounds size.
+    # No truncation
     return text or ""
 
 
@@ -254,12 +254,12 @@ def _summarize_original_graph(
             model=model,
             system_text=system_text,
             user_text=user_text,
-            temperature=0.0,      # tighter/safer
+            temperature=0.0,
             top_p=0.95,
             num_ctx=chunk_size,
             timeout_s=240,
             retries=5,
-            enforce_json=True,    # request strict JSON
+            enforce_json=True,
         )
         if logger and hits < 5:
             logger.dump_pair(

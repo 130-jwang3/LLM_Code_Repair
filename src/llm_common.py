@@ -7,7 +7,6 @@ from typing import Optional
 import requests
 from .runlog import RunLogger
 
-# Base host only (no /api). Can override with env var if needed.
 OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://localhost:11434")
 
 
@@ -35,7 +34,7 @@ def chat_or_generate(
         if num_ctx:
             o["num_ctx"] = num_ctx
         if json_mode:
-            o["format"] = "json"   # Ollama JSON mode (not all models support)
+            o["format"] = "json"
         return o
 
     # 1) chat
@@ -68,7 +67,7 @@ def chat_or_generate(
         if content:
             return content, None
 
-    # 2) generate fallback — IMPORTANT: honor enforce_json here too
+    # 2) generate fallback
     gen_url = f"{OLLAMA_BASE}/api/generate"
     gen_payload = {
         "model": model,

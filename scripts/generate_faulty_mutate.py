@@ -46,7 +46,6 @@ class MultiMutator(ast.NodeTransformer):
                 self._add_mut(node, "Compare", "Lt→Gt")
         return node
 
-    # Py3.8+: booleans are ast.Constant; older code had ast.NameConstant
     def visit_Constant(self, node: ast.Constant):
         if isinstance(node.value, bool):
             self._add_mut(node, "Constant", f"{node.value}→{not node.value}")
@@ -107,8 +106,8 @@ def mutate_file(src_path: str, dst_path: str) -> Dict[str, Any]:
         "ok": False,
         "error": None,
         "mutation_count": 0,
-        "mutations_by_type": {},   # {"Compare": 2, "BinOp": 1, ...}
-        "mutations": []            # detailed list with node/change/lineno/col/etc.
+        "mutations_by_type": {},
+        "mutations": []
     }
 
     try:
@@ -176,7 +175,7 @@ def generate_faulty_mutant_code(input_dir: str, output_dir: str) -> None:
     json_log_path = os.path.join(output_dir, "mutated_files.json")
 
     for root, dirs, files in os.walk(input_dir):
-        # Skip .git etc.
+        # Skip .git
         parts = root.split(os.sep)
         if '.git' in parts:
             continue
@@ -243,7 +242,6 @@ def generate_faulty_mutant_code(input_dir: str, output_dir: str) -> None:
 
 
 if __name__ == "__main__":
-    # Optional: CLI usage
     # python scripts/generate_faulty_mutate.py <input_dir> <output_dir>
     if len(sys.argv) == 3:
         generate_faulty_mutant_code(sys.argv[1], sys.argv[2])

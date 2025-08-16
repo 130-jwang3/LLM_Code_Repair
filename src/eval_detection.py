@@ -67,14 +67,12 @@ def _normpath(p: str | None) -> str | None:
         return None
     return os.path.normpath(p).replace("\\", "/").lower()
 
-# Ignore tests by default; set to () if you want to include them
 IGNORE_DIR_PREFIXES = ("tests/", "test/")
 
 def _is_ignored_path(rel: str) -> bool:
     """Return True if we should ignore this file in scoring (e.g., tests)."""
     if not rel:
         return True
-    # anywhere in the path
     for pref in IGNORE_DIR_PREFIXES:
         if f"/{pref}" in rel or rel.startswith(pref):
             return True
@@ -100,16 +98,12 @@ def _to_rel(p: str | None, mutants_dir: str) -> str | None:
         if idx != -1:
             return p[idx + len(md) + 1:]
 
-        # Common case: name like ".../pygithub_mutants/..."
-        # Try to trim after "*_mutants/"
         if "_mutants/" in p:
             return p.split("_mutants/", 1)[1]
 
-    # If it's already relative (no root/drive), keep it
-    if not (p.startswith("/") or (":" in p.split("/")[0])):  # windows drive
+    if not (p.startswith("/") or (":" in p.split("/")[0])):
         return p
 
-    # Fallback: last two segments
     parts = p.split("/")
     if len(parts) >= 2:
         return "/".join(parts[-2:])
@@ -172,7 +166,6 @@ def _load_mutations(mutants_dir: str) -> Dict[str, List[List[int]]]:
         # any direct spans on the record
         spans += _normalize_line_spans(rec.get("line_spans") or rec.get("spans") or
                                        rec.get("ranges") or rec.get("lines") or [])
-        # mutation/edit style entries
         for ed in (rec.get("mutations") or rec.get("edits") or []):
             if not isinstance(ed, dict):
                 continue
@@ -197,7 +190,7 @@ def evaluate_detection(
     detection_json: Any,
     mutants_dir: str,
     iou_thresh: float = 0.2,
-    file_level: bool = True,  # default: file-level scoring
+    file_level: bool = True,
 ):
     """
     If file_level=True:
